@@ -1,0 +1,33 @@
+<?php
+
+use Support\Greetings;
+use Carbon\Carbon;
+
+class Test
+{
+    use Greetings;
+    use CompanyAddEdit;
+    public const INCLUSIVE_TAX = 0;
+    public const EXCLUSIVE_TAX = 1;
+    private $g;
+    protected $b;
+    protected $c;
+
+    public $z;
+    private $a;
+    /* is the x
+     * asdadsasd
+     */
+    public $x;
+
+
+    public function test()
+    {
+        $this->a = 1;
+        new X();
+        $this->getGreeting();
+
+        $now = Carbon::now();
+        return;
+    }
+}

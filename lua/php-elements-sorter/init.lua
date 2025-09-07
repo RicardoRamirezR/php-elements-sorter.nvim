@@ -58,6 +58,30 @@ local prev_type = nil
 
 local get_node_text = ts.get_node_text
 
+-- ✅ Compatibilidad: wrapper para parse_query
+local function parse_query(lang, query)
+  if vim.treesitter.query and vim.treesitter.query.parse then
+    return vim.treesitter.query.parse(lang, query)
+  elseif vim.treesitter.query and vim.treesitter.query.parse_query then
+    return vim.treesitter.query.parse_query(lang, query)
+  elseif ts.query and ts.query.parse then
+    return ts.query.parse(lang, query)
+  else
+    error('No se encontró ninguna función de Tree-sitter para parsear queries')
+  end
+end
+
+-- ✅ Compatibilidad: wrapper para get_parser
+local function get_parser(bufnr, lang)
+  if vim.treesitter.get_parser then
+    return vim.treesitter.get_parser(bufnr, lang)
+  elseif parsers.get_parser then
+    return parsers.get_parser(bufnr, lang)
+  else
+    error('No se encontró ninguna función para obtener parser de Tree-sitter')
+  end
+end
+
 ---Get the visibility of a node as a string
 ---@param node TSNode
 ---@return string
@@ -88,7 +112,7 @@ end
 
 ---Set the TreeSitter parser for the current buffer
 local function set_treesitter_parser()
-  local parser = parsers.get_parser(M.bufnr)
+  local parser = get_parser(M.bufnr, M.lang)
   local tree = parser:parse()[1]
   M.root = tree:root()
   M.lang = parser:lang()
@@ -135,17 +159,26 @@ local function extract_range(start_row, end_row)
     (property_declaration) @property
   ]]
 
-  local parsed_query = ts.query.parse(M.lang, query_string)
+  local parsed_query = parse_query(M.lang, query_string)
   local captures = {
     trait = {},
     const = {},
     property = {},
   }
 
+  local rows = { _start = end_row, _end = start_row }
+
   for id, node in parsed_query:iter_captures(M.root, M.bufnr, start_row, end_row) do
     local capture_name = parsed_query.captures[id]
     local real_node_start_row = node:start()
     local end_row_arg = end_row == -1 and real_node_start_row + 1 or end_row
+
+    if real_node_start_row < rows._start then
+      rows._start = real_node_start_row
+    end
+    if real_node_start_row > rows._end then
+      rows._end = real_node_start_row
+    end
 
     if real_node_start_row >= start_row and real_node_start_row <= end_row_arg then
       local prev_sibling = node:prev_sibling()
@@ -174,7 +207,7 @@ local function extract_range(start_row, end_row)
     end
   end
 
-  return captures.trait, captures.const, captures.property
+  return captures.trait, captures.const, captures.property, rows
 end
 
 ---Get the minimum and maximum range for a given query
@@ -191,12 +224,6 @@ local function get_min_max_range(query)
 end
 
 -- Sorting functions
-
----Sort and update PHP elements in the buffer
----@param statements NodeInfo[]
----@param compare function
----@param is_property boolean
----@return boolean
 local function sort_and_update(statements, compare, is_property)
   if #statements == 0 then
     return false
@@ -210,7 +237,6 @@ local function sort_and_update(statements, compare, is_property)
     range.max = math.max(range.max, end_row + 1)
   end
 
-  -- Store the original order of node texts
   local original_order = {}
   for _, statement in ipairs(statements) do
     table.insert(original_order, get_node_text(statement.node, 0))
@@ -218,7 +244,6 @@ local function sort_and_update(statements, compare, is_property)
 
   table.sort(statements, compare)
 
-  -- Check if the sorted order is the same as the original order
   local order_changed = false
   for i, statement in ipairs(statements) do
     if get_node_text(statement.node, 0) ~= original_order[i] then
@@ -265,10 +290,9 @@ local function sort_and_update(statements, compare, is_property)
   return update_buffer(range, lines)
 end
 
----Sort namespace use declarations
 local function sort_namespace_uses()
   local query_string = [[(namespace_use_declaration) @namespace_use_declaration]]
-  local parsed_query = ts.query.parse(M.lang, query_string)
+  local parsed_query = parse_query(M.lang, query_string)
   local uses = {}
 
   local start_row, end_row
@@ -298,8 +322,7 @@ local function sort_namespace_uses()
   end, false)
 end
 
----Remove unused namespace uses
-local function remove_unused_namesapce_uses()
+local function remove_unused_namespace_uses()
   if not M.config.remove_unused_imports or not M.config.sort_namespace_uses then
     return
   end
@@ -307,7 +330,7 @@ local function remove_unused_namesapce_uses()
   set_treesitter_parser()
 
   local query_string = [[(namespace_use_declaration) @namespace_use_declaration]]
-  local parsed_query = ts.query.parse(M.lang, query_string)
+  local parsed_query = parse_query(M.lang, query_string)
   local start_row, end_row
   local captures = {}
 
@@ -354,129 +377,22 @@ local function remove_unused_namesapce_uses()
   end
 end
 
----Remove extra new lines
-local function remove_extra_new_lines()
-  set_treesitter_parser()
-  local query = ts.query.parse(M.lang, [[(namespace_use_declaration) @namespace_use_declaration]])
-
-  local range = get_min_max_range(query)
-  for i = range.max, range.min, -1 do
-    local node_line = vim.api.nvim_buf_get_lines(M.bufnr, i - 1, i, false)[1]
-    if node_line:match('^%s*$') ~= nil then
-      pcall(vim.api.nvim_buf_set_lines, M.bufnr, i - 1, i, false, {})
-    end
-  end
-
-  local qs = [[
-      (use_declaration
-        "use" @vis
-        (static_modifier)? @modifier
-        (name) @property_element
-    ) @prop
-    (property_declaration
-        (visibility_modifier) @vis
-        (static_modifier)? @modifier
-        (property_element) @property_element
-    ) @prop
-    (const_declaration
-        (visibility_modifier) @vis
-        "const" @modifier
-        (const_element) @property_element
-    ) @prop
-]]
-
-  query = ts.query.parse(M.lang, qs)
-
-  range = get_min_max_range(query)
-
-  for i = range.max, range.min, -1 do
-    local node_line = vim.api.nvim_buf_get_lines(M.bufnr, i - 1, i, false)[1]
-    if node_line:match('^%s*$') ~= nil then
-      pcall(vim.api.nvim_buf_set_lines, M.bufnr, i - 1, i, false, {})
-    end
-  end
-
-  query = ts.query.parse(M.lang, qs)
-
-  local result = {}
-  local current_entry = {}
-
-  for id, node, _ in query:iter_captures(M.root, M.bufnr, 0, -1) do
-    local name = query.captures[id]
-    local text = get_node_text(node, M.bufnr)
-
-    if name == 'prop' then
-      if next(current_entry) ~= nil then
-        table.insert(result, current_entry)
-      end
-      current_entry = { node = node, type = node:type() }
-    else
-      current_entry[name] = text
-    end
-  end
-
-  if next(current_entry) ~= nil then
-    table.insert(result, current_entry)
-  end
-
-  local prev_vis
-  local start_row, end_row
-
-  for i = #result, 1, -1 do
-    local entry = result[i]
-    if prev_vis ~= entry.vis then
-      local prev_sibling = entry.node:prev_sibling()
-      local comment = prev_sibling and prev_sibling:type() == 'comment' and prev_sibling or nil
-      local lines = {}
-
-      range = { min = math.huge, max = 0 }
-      if comment then
-        start_row, _, end_row, _ = comment:range()
-        range.min = math.min(range.min, start_row + 1)
-        range.max = math.max(range.max, end_row + 1)
-        local comment_lines = vim.api.nvim_buf_get_lines(M.bufnr, start_row, end_row + 1, false)
-        for _, line in ipairs(comment_lines) do
-          table.insert(lines, line)
-        end
-      end
-
-      start_row, _, end_row, _ = entry.node:range()
-      range.min = math.min(range.min, start_row + 1)
-      range.max = math.max(range.max, end_row + 1)
-      local original_lines = vim.api.nvim_buf_get_lines(M.bufnr, start_row, end_row + 1, false)
-      for _, line in ipairs(original_lines) do
-        table.insert(lines, line)
-      end
-      if prev_vis then
-        table.insert(lines, '')
-      else
-        local next_line = vim.api.nvim_buf_get_lines(M.bufnr, end_row + 1, end_row + 2, false)[1]
-        if next_line:match('^%s*$') == nil then
-          table.insert(lines, '')
-        end
-      end
-      vim.api.nvim_buf_set_lines(M.bufnr, range.min - 1, range.max, false, lines)
-      prev_vis = entry.vis
-    end
-  end
-end
-
 ---Process and sort PHP elements
 ---@param start_row number
 ---@param end_row number
 local function process_and_sort_elements(start_row, end_row)
   local traits, constants, properties = extract_range(start_row, end_row)
 
-  if M.config.sort_properties then
-    sort_and_update(properties, function(a, b)
-      return compare_nodes(a, b, true)
-    end, true)
-  end
-
   if M.config.sort_constants then
     sort_and_update(constants, function(a, b)
       return compare_nodes(a, b, true)
     end, false)
+  end
+
+  if M.config.sort_properties then
+    sort_and_update(properties, function(a, b)
+      return compare_nodes(a, b, true)
+    end, true)
   end
 
   if M.config.sort_traits then
@@ -486,28 +402,27 @@ local function process_and_sort_elements(start_row, end_row)
   end
 end
 
----Main function to sort PHP elements
 function M.sort_php_elements()
   M.bufnr = vim.api.nvim_get_current_buf()
-  local parser = parsers.get_parser(M.bufnr)
+  local parser = get_parser(M.bufnr, M.lang)
   prev_type = nil
 
   if not parser then
-    error('Failed to get parser for the current buffer.')
+    return
   end
 
   local tree = parser:parse()[1]
   if not tree then
-    error('Failed to parse the syntax tree.')
+    return
   end
 
   set_treesitter_parser()
 
   if M.lang ~= 'php' then
-    error('This command is only for PHP files')
+    return
   end
 
-  local class_query = ts.query.parse(M.lang, '(class_declaration) @class')
+  local class_query = parse_query(M.lang, '(class_declaration) @class')
   local classes = {}
 
   for _, node in class_query:iter_captures(M.root, M.bufnr, 0, -1) do
@@ -524,12 +439,9 @@ function M.sort_php_elements()
   end
 
   sort_namespace_uses()
-  remove_unused_namesapce_uses()
-  remove_extra_new_lines()
+  remove_unused_namespace_uses()
 end
 
----Set up the plugin with user configuration
----@param user_config Config
 function M.setup(user_config)
   M.config = vim.tbl_deep_extend('force', M.config, user_config or {})
 

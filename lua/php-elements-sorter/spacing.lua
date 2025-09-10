@@ -1,4 +1,7 @@
+-- lua/php-elements-sorter/spacing.lua
+
 local M = {}
+
 local parser = require('php-elements-sorter.parser')
 local utils = require('php-elements-sorter.utils')
 

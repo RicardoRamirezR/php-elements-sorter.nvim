@@ -1,5 +1,6 @@
 -- lua/php-elements-sorter/utils.lua
 -- General utilities: visibility, buffer updates, diagnostics
+
 local M = {}
 local ts = vim.treesitter
 local get_node_text = ts.get_node_text

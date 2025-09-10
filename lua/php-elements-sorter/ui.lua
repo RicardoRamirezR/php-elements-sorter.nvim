@@ -1,8 +1,8 @@
 -- lua/php-elements-sorter/ui.lua
 -- UI helpers: Telescope + vim.ui.select with nice formatting
+
 local M = {}
 
-local has_plenary, plenary_strings = pcall(require, 'plenary.strings')
 local has_telescope, _ = pcall(require, 'telescope')
 
 --- Show code actions with Telescope using entry_display & widths

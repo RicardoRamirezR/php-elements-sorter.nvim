@@ -1,67 +1,109 @@
 # PHP Elements Sorter
 
-The PHP Elements Sorter is a Neovim plugin that automatically sorts various PHP 
-elements within a buffer, such as namespace uses, traits, constants, and 
-properties. It can also remove unused imports and add spacing between 
-elements with different visibility modifiers.
+**PHP Elements Sorter** is a Neovim plugin written in Lua that organizes and improves the readability of your PHP classes by sorting and formatting different elements consistently.  
+It uses [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) to parse PHP code and provides **code actions** for an LSP-like workflow.
 
-## Features
+## ✨ Features
 
-- Sort namespace uses
-- Sort traits
-- Sort constants
-- Sort properties
-- Remove unused imports
-- Add spacing between elements with different visibility modifiers (e.g., public, protected, private)
-- Configurable options to enable/disable specific sorting behaviors
+- Sort `namespace use` statements
+- Remove unused `namespace use` statements
+- Sort traits, constants, and properties
+- Add spacing:
+  - Between different visibility modifiers (`public`, `protected`, `private`)
+  - Between constants and properties
+  - Between namespace uses and the class definition
+  - Between traits/properties and methods
+- Configurable defaults
+- Integrated **Code Actions**:
+  - Sort namespace uses
+  - Remove unused namespace uses
+  - Sort traits/constants/properties
+  - Sort all PHP elements
+- Works standalone or alongside your LSP (e.g., Intelephense, PHP Actor)
+- Telescope integration for a polished UI (falls back to `vim.ui.select` if Telescope is not available)
 
-## Installation
+---
 
-1. Install the plugin using your preferred Neovim plugin manager. For example, with [packer.nvim](https://github.com/wbthomason/packer.nvim):
+## 📦 Installation
 
-   ```lua
-   use 'RicardoRamirezR/php-elements-sorter.nvim'
-   ```
+With [packer.nvim](https://github.com/wbthomason/packer.nvim):
 
-2. In your Neovim configuration, set up the plugin:
+```lua
+use 'ricardoramirezr/php-elements-sorter.nvim'
+```
 
-   ```lua
-   require('php-elements-sorter').setup({
-     -- Optional configuration overrides
-     sort_properties = true,
-     sort_traits = true,
-     sort_namespace_uses = true,
-     sort_constants = true,
-     remove_unused_imports = true,
-     add_newline_between_const_and_properties = true,
-     add_visibility_spacing = true,
-     default_visibility = 'public',
-   })
-   ```
+---
 
-## Usage
+## ⚙️ Setup
 
-The plugin automatically sorts the PHP elements whenever a PHP file is written 
-(`BufWritePre` event). You can also manually run the sorting command by executing `:SortPHPElements` in your Neovim instance.
+In your Neovim config:
 
-## Configuration
+```lua
+require('php-elements-sorter').setup({
+  -- Sorting options
+  sort_properties = true,
+  sort_traits = true,
+  sort_namespace_uses = true,
+  sort_constants = true,
 
-The plugin provides several configuration options that you can customize to suit your preferences. Here's a breakdown of the available options:
+  -- Imports
+  remove_unused_imports = true,
 
-- `sort_properties`: Sort property declarations (default: `true`)
-- `sort_traits`: Sort trait uses (default: `true`)
-- `sort_namespace_uses`: Sort namespace uses (default: `true`)
-- `sort_constants`: Sort constant declarations (default: `true`)
-- `remove_unused_imports`: Remove unused imports (default: `true`)
-- `add_newline_between_const_and_properties`: Add a newline between constant and property declarations (default: `true`)
-- `add_visibility_spacing`: Add spacing between elements with different visibility modifiers (e.g., public, protected, private) (default: `true`)
-- `default_visibility`: The default visibility modifier to use if none is specified (default: `'public'`)
+  -- Spacing options
+  add_newline_between_const_and_properties = true,
+  add_visibility_spacing = true,
+  add_newline_after_namespace_uses = true,
+  add_newline_after_trait_uses = true,
 
-## Contributing
+  -- Default visibility for properties without modifiers
+  default_visibility = 'public',
+})
+```
 
-Contributions are welcome! If you encounter any issues or have suggestions for improvements, please feel free to open an issue or submit a pull request.
+---
 
-## License
+## 🚀 Usage
+
+### Commands
+
+- `:SortPhpElements` → Sort **all PHP elements** in the current buffer
+
+### Code Actions
+
+When editing a PHP file, trigger code actions `gra`. You’ll see:
+
+1. **Sort namespace uses**  
+2. **Remove unused namespace uses**  
+3. **Sort properties/constants/traits**  
+4. **Sort all PHP elements**
+
+If [Telescope](https://github.com/nvim-telescope/telescope.nvim) is installed, the actions appear in a searchable picker.  
+Otherwise, they are shown via the built-in `vim.ui.select`.
+
+---
+
+## ⚙️ Configuration Options
+
+- `sort_properties`: Sort property declarations (default: `true`)  
+- `sort_traits`: Sort trait uses (default: `true`)  
+- `sort_namespace_uses`: Sort namespace uses (default: `true`)  
+- `sort_constants`: Sort constant declarations (default: `true`)  
+- `remove_unused_imports`: Remove unused imports (default: `true`)  
+- `add_newline_between_const_and_properties`: Add a newline between constant and property declarations (default: `true`)  
+- `add_visibility_spacing`: Add spacing between elements with different visibility modifiers (default: `true`)  
+- `add_newline_after_namespace_uses`: Add a newline after the last namespace use block (default: `true`)  
+- `add_newline_after_trait_uses`: Add a newline after the last trait use (default: `true`)  
+- `default_visibility`: The default visibility modifier for properties without explicit visibility (default: `'public'`)  
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! If you encounter issues or have ideas for improvements, please open an issue or submit a PR.
+
+---
+
+## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
 

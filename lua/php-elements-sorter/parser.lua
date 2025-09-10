@@ -1,5 +1,6 @@
 -- lua/php-elements-sorter/parser.lua
 -- Tree-sitter parser helpers and queries
+
 local M = {}
 local ts = vim.treesitter
 local parsers = require('nvim-treesitter.parsers')

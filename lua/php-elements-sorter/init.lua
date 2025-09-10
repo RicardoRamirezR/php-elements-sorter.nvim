@@ -23,9 +23,7 @@ M.lang = nil
 M.prev_type = nil
 
 -- expose modules (they expect a state table as first param)
-local parser = require('php-elements-sorter.parser')
 local sorters = require('php-elements-sorter.sorters')
-local spacing = require('php-elements-sorter.spacing')
 local actions = require('php-elements-sorter.actions')
 
 --- Public wrappers to pass state

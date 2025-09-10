@@ -1,5 +1,6 @@
 -- lua/php-elements-sorter/actions.lua
 -- Collect LSP code actions, merge with plugin custom ones, show UI and execute selection
+
 local M = {}
 local parser = require('php-elements-sorter.parser')
 local ui = require('php-elements-sorter.ui')
@@ -88,12 +89,10 @@ end
 function M.code_action(state)
   -- If no class present, nothing to offer
   if not parser.has_class(state) then
-    vim.notify('No class found — no PHP element actions available', vim.log.levels.INFO)
     return
   end
 
   local bufnr = vim.api.nvim_get_current_buf()
-  local filetype = vim.bo[bufnr].filetype
   local clients = vim.lsp.get_clients({ bufnr = bufnr })
 
   local offer_plugin_actions = {}

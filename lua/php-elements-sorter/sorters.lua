@@ -1,5 +1,6 @@
 -- lua/php-elements-sorter/sorters.lua
 -- Sorting logic for uses/constants/properties/traits, with correct visibility spacing
+
 local M = {}
 local parser = require('php-elements-sorter.parser')
 local utils = require('php-elements-sorter.utils')
@@ -7,11 +8,6 @@ local spacing = require('php-elements-sorter.spacing')
 
 local ts = vim.treesitter
 local get_node_text = ts.get_node_text
-
-local function node_range_1b(node)
-  local s, _, e, _ = node:range()
-  return s + 1, e + 1
-end
 
 --- Generic sort + update for a list of statements.
 -- Ensures:
@@ -128,6 +124,54 @@ local function sort_and_update(state, statements, compare_fn, is_property)
   return true
 end
 
+local function sort_constants_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_constants and #consts > 0 then
+    sort_and_update(state, consts, function(a, b)
+      return utils.compare_nodes(a, b, true, state.config.default_visibility)
+    end, false)
+  end
+end
+
+local function sort_properties_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_properties and #props > 0 then
+    local changed = sort_and_update(state, props, function(a, b)
+      return utils.compare_nodes(a, b, true, state.config.default_visibility)
+    end, true)
+
+    -- if no change, still ensure spacing around the properties block (before/after)
+    if not changed and #props > 0 then
+      local first_s, _, last_e, _ = props[1].node:range()
+      local start_idx0 = first_s
+      local end_idx0 = last_e + 1
+
+      if start_idx0 - 1 >= 0 then
+        local prev_line =
+            vim.api.nvim_buf_get_lines(state.bufnr, start_idx0 - 1, start_idx0, false)[1]
+        if prev_line and not utils.is_empty_line(prev_line) then
+          pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, start_idx0, false, { '' })
+          end_idx0 = end_idx0 + 1
+        end
+      end
+
+      local after_line = vim.api.nvim_buf_get_lines(state.bufnr, end_idx0, end_idx0 + 1, false)
+      if #after_line == 0 or not utils.is_empty_line(after_line[1]) then
+        pcall(vim.api.nvim_buf_set_lines, state.bufnr, end_idx0, end_idx0, false, { '' })
+      end
+    end
+  end
+end
+
+local function sort_traits_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_traits and #traits > 0 then
+    sort_and_update(state, traits, function(a, b)
+      return utils.compare_nodes(a, b, false, state.config.default_visibility)
+    end, false)
+  end
+end
+
 --- Sort namespace use statements + internal spacing (before/after block)
 function M.sort_namespace_uses_impl(state)
   if not state.config.sort_namespace_uses then
@@ -209,55 +253,6 @@ function M.remove_unused_namespace_uses_impl(state)
       local s, _, e, _ = uses[i]:range()
       pcall(vim.api.nvim_buf_set_lines, state.bufnr, s, e + 1, false, {})
     end
-  end
-end
-
--- Helpers: sort constants/properties/traits in given start..end (0-based) range
-local function sort_constants_in_range(state, start_row, end_row)
-  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
-  if state.config.sort_constants and #consts > 0 then
-    sort_and_update(state, consts, function(a, b)
-      return utils.compare_nodes(a, b, true, state.config.default_visibility)
-    end, false)
-  end
-end
-
-local function sort_properties_in_range(state, start_row, end_row)
-  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
-  if state.config.sort_properties and #props > 0 then
-    local changed = sort_and_update(state, props, function(a, b)
-      return utils.compare_nodes(a, b, true, state.config.default_visibility)
-    end, true)
-
-    -- if no change, still ensure spacing around the properties block (before/after)
-    if not changed and #props > 0 then
-      local first_s, _, last_e, _ = props[1].node:range()
-      local start_idx0 = first_s
-      local end_idx0 = last_e + 1
-
-      if start_idx0 - 1 >= 0 then
-        local prev_line =
-            vim.api.nvim_buf_get_lines(state.bufnr, start_idx0 - 1, start_idx0, false)[1]
-        if prev_line and not utils.is_empty_line(prev_line) then
-          pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, start_idx0, false, { '' })
-          end_idx0 = end_idx0 + 1
-        end
-      end
-
-      local after_line = vim.api.nvim_buf_get_lines(state.bufnr, end_idx0, end_idx0 + 1, false)
-      if #after_line == 0 or not utils.is_empty_line(after_line[1]) then
-        pcall(vim.api.nvim_buf_set_lines, state.bufnr, end_idx0, end_idx0, false, { '' })
-      end
-    end
-  end
-end
-
-local function sort_traits_in_range(state, start_row, end_row)
-  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
-  if state.config.sort_traits and #traits > 0 then
-    sort_and_update(state, traits, function(a, b)
-      return utils.compare_nodes(a, b, false, state.config.default_visibility)
-    end, false)
   end
 end
 

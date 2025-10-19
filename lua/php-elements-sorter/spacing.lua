@@ -1,5 +1,3 @@
--- lua/php-elements-sorter/spacing.lua
-
 local M = {}
 
 local parser = require('php-elements-sorter.parser')
@@ -50,7 +48,7 @@ function M.add_spacing_around_class_members(state)
   end
 
   local query =
-      parser.parse_query(state.lang, '(class_declaration body: (declaration_list (_) @member))')
+    parser.parse_query(state.lang, '(class_declaration body: (declaration_list (_) @member))')
   local members = {}
 
   for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
@@ -106,7 +104,7 @@ function M.add_spacing_after_namespace_uses(state)
   end
 end
 
---- Existing: spacing after trait uses
+--- Fixed: spacing after trait uses - now uses correct node type
 function M.add_spacing_after_trait_uses(state)
   if not state.config.add_newline_after_trait_uses then
     return
@@ -115,8 +113,26 @@ function M.add_spacing_after_trait_uses(state)
     return
   end
 
-  local query = parser.parse_query(state.lang, '(trait_use_clause) @trait')
+  -- Use_declaration within a class body represents trait uses in PHP
+  local ok, query = pcall(
+    parser.parse_query,
+    state.lang,
+    '(class_declaration body: (declaration_list (use_declaration) @trait))'
+  )
+
+  if not ok or not query then
+    return
+  end
+
+  -- Collect all trait use nodes to avoid multiple modifications
+  local trait_nodes = {}
   for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    table.insert(trait_nodes, node)
+  end
+
+  -- Process in reverse order to avoid offset issues when inserting lines
+  for i = #trait_nodes, 1, -1 do
+    local node = trait_nodes[i]
     local _, _, end_row, _ = node:range()
     local next_line = end_row + 1
     local lines = vim.api.nvim_buf_get_lines(state.bufnr, next_line, next_line + 1, false)

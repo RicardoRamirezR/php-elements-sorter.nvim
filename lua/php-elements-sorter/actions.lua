@@ -1,6 +1,7 @@
 -- ============================================================================
--- lua/php-elements-sorter/utils/actions.lua
--- Code actions - refactored to use modular utilities
+-- lua/php-elements-sorter/actions.lua
+-- Code actions - Refactored to use Result pattern
+-- MEJORA #5: Result pattern para mejor manejo de errores
 -- ============================================================================
 
 local M = {}
@@ -9,6 +10,7 @@ local log = require('php-elements-sorter.utils.log')
 local lsp = require('php-elements-sorter.utils.lsp')
 local tbl = require('php-elements-sorter.utils.tbl')
 local ui = require('php-elements-sorter.ui')
+local Result = require('php-elements-sorter.utils.result')
 
 --- Produce plugin-specific actions
 ---@return table actions List of code actions
@@ -47,6 +49,41 @@ local function plugin_actions()
   }
 end
 
+--- Build safe diagnostic from Neovim diagnostic using Result
+---@param nvim_diag table Neovim diagnostic
+---@return table result Result with safe diagnostic or error
+local function build_safe_diagnostic(nvim_diag)
+  -- Check if diagnostic has LSP data
+  local lsp_data = nvim_diag.user_data and nvim_diag.user_data.lsp
+
+  if not lsp_data then
+    return Result.err('Diagnostic missing LSP data')
+  end
+
+  if not lsp_data.range then
+    return Result.err('Diagnostic missing range')
+  end
+
+  local range = lsp_data.range
+
+  -- Validate range
+  if not lsp.is_valid_range(range) then
+    return Result.err('Invalid LSP range')
+  end
+
+  -- Build safe diagnostic
+  return Result.ok({
+    range = {
+      start = { line = range.start.line, character = range.start.character },
+      ['end'] = { line = range['end'].line, character = range['end'].character },
+    },
+    message = lsp_data.message or nvim_diag.message or '',
+    severity = lsp_data.severity or nvim_diag.severity,
+    code = lsp_data.code or nvim_diag.code,
+    source = lsp_data.source or nvim_diag.source,
+  })
+end
+
 --- Build safe diagnostics from Neovim diagnostics
 ---@param diagnostics table Neovim diagnostics
 ---@return table safe_diagnostics
@@ -55,32 +92,18 @@ local function build_safe_diagnostics(diagnostics)
   local skipped = 0
 
   for _, nvim_diag in ipairs(diagnostics) do
-    local lsp_data = nvim_diag.user_data and nvim_diag.user_data.lsp
-    if lsp_data and lsp_data.range then
-      local start = lsp_data.range.start
-      local end_pos = lsp_data.range['end']
+    local result = build_safe_diagnostic(nvim_diag)
 
-      if lsp.is_valid_range({ start = start, ['end'] = end_pos }) then
-        table.insert(safe, {
-          range = {
-            start = { line = start.line, character = start.character },
-            ['end'] = { line = end_pos.line, character = end_pos.character },
-          },
-          message = lsp_data.message or nvim_diag.message or '',
-          severity = lsp_data.severity or nvim_diag.severity,
-          code = lsp_data.code or nvim_diag.code,
-          source = lsp_data.source or nvim_diag.source,
-        })
-      else
-        skipped = skipped + 1
-      end
+    if Result.is_ok(result) then
+      table.insert(safe, result.value)
     else
       skipped = skipped + 1
+      log.debug('Skipped diagnostic: ' .. result.error)
     end
   end
 
   if skipped > 0 then
-    log.debugf('Skipped %d diagnostics with invalid LSP range data', skipped)
+    log.debugf('Skipped %d diagnostics with invalid data', skipped)
   end
 
   return safe
@@ -96,6 +119,58 @@ local function show_actions(actions, execute_fn)
   end
 end
 
+--- Execute workspace edit using Result pattern
+---@param edit table Workspace edit
+---@param encoding string LSP encoding
+---@return table result
+local function execute_workspace_edit(edit, encoding)
+  return Result.try(function()
+    vim.lsp.util.apply_workspace_edit(edit, encoding)
+    return true
+  end, 'workspace_edit')
+end
+
+--- Execute LSP command using Result pattern
+---@param command table|string Command to execute
+---@return table result
+local function execute_lsp_command(command)
+  return Result.try(function()
+    if type(command) == 'string' then
+      vim.lsp.buf.execute_command({ command = command })
+    else
+      vim.lsp.buf.execute_command(command)
+    end
+    return true
+  end, 'lsp_command')
+end
+
+--- Execute custom plugin command using Result pattern
+---@param command_name string Command name
+---@return table result
+local function execute_custom_command(command_name)
+  -- Try from registered commands first
+  local cmd_fn = vim.lsp.commands and vim.lsp.commands[command_name]
+  if type(cmd_fn) == 'function' then
+    return Result.try(cmd_fn, 'custom_command[registered]')
+  end
+
+  -- Try from plugin module
+  return Result.try(function()
+    local ok, plugin = pcall(require, 'php-elements-sorter')
+    if not ok then
+      error('Failed to load php-elements-sorter plugin')
+    end
+
+    local func_name = command_name:gsub('php_elements_sorter%.', '')
+    if not plugin[func_name] or type(plugin[func_name]) ~= 'function' then
+      error('Custom function not found: ' .. func_name)
+    end
+
+    plugin[func_name]()
+    return true
+  end, 'custom_command[plugin]')
+end
+
 --- Execute action (handles LSP action objects and plugin custom commands)
 ---@param action table Action to execute
 local function execute_action(action)
@@ -106,76 +181,123 @@ local function execute_action(action)
     tostring(action.is_lsp or false)
   )
 
+  local results = {}
+
+  -- Execute workspace edit if present
   if action.edit then
     local encoding = lsp.get_encoding(vim.api.nvim_get_current_buf())
     log.debug('Applying workspace edit with encoding: ' .. encoding)
-    vim.lsp.util.apply_workspace_edit(action.edit, encoding)
+
+    local edit_result = execute_workspace_edit(action.edit, encoding)
+    table.insert(results, edit_result)
+
+    if Result.is_err(edit_result) then
+      log.error('Workspace edit failed: ' .. edit_result.error)
+    end
   end
 
+  -- Execute LSP command if present and not custom
   if action.command and not action.is_custom then
     log.debug('Executing LSP command: ' .. vim.inspect(action.command))
-    pcall(function()
-      if type(action.command) == 'string' then
-        vim.lsp.buf.execute_command({ command = action.command })
-      else
-        vim.lsp.buf.execute_command(action.command)
-      end
-    end)
+
+    local cmd_result = execute_lsp_command(action.command)
+    table.insert(results, cmd_result)
+
+    if Result.is_err(cmd_result) then
+      log.error('LSP command failed: ' .. cmd_result.error)
+    end
   end
 
+  -- Execute custom command if present
   if action.is_custom and action.command and action.command.command then
     local cmd_str = action.command.command
     log.debug('Executing custom command: ' .. cmd_str)
 
-    local cmd_fn = vim.lsp.commands and vim.lsp.commands[cmd_str]
-    if type(cmd_fn) == 'function' then
-      pcall(cmd_fn)
-      return
-    end
+    local custom_result = execute_custom_command(cmd_str)
+    table.insert(results, custom_result)
 
-    local ok, plugin = pcall(require, 'php-elements-sorter')
-    if ok and plugin then
-      local func_name = cmd_str:gsub('php_elements_sorter%.', '')
-      if plugin[func_name] and type(plugin[func_name]) == 'function' then
-        pcall(plugin[func_name])
-      else
-        log.warn('Custom function not found: ' .. func_name)
-      end
-    else
-      log.warn('Failed to load php-elements-sorter plugin')
+    if Result.is_err(custom_result) then
+      log.error('Custom command failed: ' .. custom_result.error)
     end
   end
+
+  -- Collect results
+  local final_result = Result.collect(results)
+
+  if Result.is_ok(final_result) then
+    log.debug('Action executed successfully')
+  else
+    log.warn('Action execution had errors: ' .. final_result.error)
+  end
+
+  return final_result
 end
 
---- Build LSP request params
+--- Build LSP range params using Result pattern
+---@param bufnr number Buffer number
+---@param encoding string LSP encoding
+---@return table result Result with params or error
+local function build_range_params(bufnr, encoding)
+  local current_win = vim.api.nvim_get_current_buf()
+
+  return Result.try(function()
+    local params = vim.lsp.util.make_range_params(current_win, encoding)
+
+    if type(params) ~= 'table' then
+      error('Range params is not a table')
+    end
+
+    return params
+  end, 'build_range_params')
+end
+
+--- Build context for LSP request using Result pattern
+---@param ctx table Context
+---@param opts table Options
+---@return table result Result with context or error
+local function build_safe_context(ctx, opts)
+  return Result.try(function()
+    local safe_context = {}
+
+    if opts and opts.only then
+      safe_context.only = opts.only
+    end
+
+    if ctx.diagnostics and tbl.count(ctx.diagnostics) > 0 then
+      local safe_diagnostics = build_safe_diagnostics(ctx.diagnostics)
+      if #safe_diagnostics > 0 then
+        safe_context.diagnostics = safe_diagnostics
+      end
+    end
+
+    return safe_context
+  end, 'build_context')
+end
+
+--- Build complete LSP request params using Result pattern
 ---@param bufnr number Buffer number
 ---@param encoding string LSP encoding
 ---@param ctx table Context
 ---@param opts table Options
----@return table? params, string? error
+---@return table result Result with params or error
 local function build_request_params(bufnr, encoding, ctx, opts)
-  local current_win = vim.api.nvim_get_current_win()
-  local ok_params, params = pcall(vim.lsp.util.make_range_params, current_win, encoding)
-
-  if not ok_params or type(params) ~= 'table' then
-    return nil, 'Failed to build LSP params: ' .. (ok_params and 'result not a table' or params)
+  -- Build range params
+  local params_result = build_range_params(bufnr, encoding)
+  if Result.is_err(params_result) then
+    return params_result
   end
 
-  local safe_context = {}
+  local params = params_result.value
 
-  if opts and opts.only then
-    safe_context.only = opts.only
+  -- Build context
+  local context_result = build_safe_context(ctx, opts)
+  if Result.is_err(context_result) then
+    return context_result
   end
 
-  if ctx.diagnostics and tbl.count(ctx.diagnostics) > 0 then
-    local safe_diagnostics = build_safe_diagnostics(ctx.diagnostics)
-    if #safe_diagnostics > 0 then
-      safe_context.diagnostics = safe_diagnostics
-    end
-  end
+  params.context = context_result.value
 
-  params.context = safe_context
-  return params, nil
+  return Result.ok(params)
 end
 
 --- Gather LSP code actions and merge with plugin actions, then show UI
@@ -191,14 +313,17 @@ function M.code_action(state, ctx, opts)
   local first_client = vim.lsp.get_clients({ bufnr = bufnr })[1]
   local encoding = first_client and first_client.offset_encoding or 'utf-16'
 
+  -- Build context range
   if not ctx.range then
-    local ok_make, range_params = pcall(vim.lsp.util.make_range_params, encoding)
-    if ok_make and range_params and range_params.range then
-      ctx.range = range_params.range
+    local range_result = Result.from_vim_api(vim.lsp.util.make_range_params, encoding)
+
+    if Result.is_ok(range_result) and range_result.value.range then
+      ctx.range = range_result.value.range
     else
       ctx.range = lsp.default_range()
     end
   end
+
   ctx.diagnostics = ctx.diagnostics or vim.diagnostic.get(bufnr)
 
   -- Get plugin actions (always available)
@@ -207,7 +332,6 @@ function M.code_action(state, ctx, opts)
 
   -- Check for LSP clients that support code actions
   local clients = lsp.get_clients_for_method(bufnr, 'textDocument/codeAction')
-
   log.debugf('Found %d LSP clients supporting codeAction', #clients)
 
   -- If no LSP clients, show plugin actions only
@@ -217,13 +341,18 @@ function M.code_action(state, ctx, opts)
     return
   end
 
-  -- Build LSP request params
-  local params, err = build_request_params(bufnr, encoding, ctx, opts)
-  if not params then
-    log.warn('Failed to build LSP params: ' .. err .. ', showing plugin actions only')
+  -- Build LSP request params using Result pattern
+  local params_result = build_request_params(bufnr, encoding, ctx, opts)
+
+  if Result.is_err(params_result) then
+    log.warn(
+      'Failed to build LSP params: ' .. params_result.error .. ', showing plugin actions only'
+    )
     show_actions(actions, execute_action)
     return
   end
+
+  local params = params_result.value
 
   log.debug('Requesting code actions from LSP clients')
 

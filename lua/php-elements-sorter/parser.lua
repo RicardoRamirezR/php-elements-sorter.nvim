@@ -1,28 +1,203 @@
+-- ============================================================================
 -- lua/php-elements-sorter/parser.lua
--- Tree-sitter parser helpers and queries
+-- Tree-sitter parser helpers and queries with validation and caching
+-- MEJORA #2: Query cache con locks y hash simplificado
+-- ============================================================================
 
 local M = {}
 local ts = vim.treesitter
-local parsers = require('nvim-treesitter.parsers')
 
---- Parse query with compatibility for different TS APIs
-function M.parse_query(lang, query)
+local parsers = require('nvim-treesitter.parsers')
+local log = require('php-elements-sorter.utils.log')
+
+-- Query cache to avoid repeated parsing
+local query_cache = {}
+
+-- Parsing locks to prevent race conditions
+local parsing_locks = {}
+
+-- Simple hash function (más rápido que SHA256)
+---@param str string String to hash
+---@return string hash
+local function simple_hash(str)
+  local hash = 0
+  for i = 1, #str do
+    hash = (hash * 31 + str:byte(i)) % (2 ^ 31 - 1)
+  end
+  return tostring(hash)
+end
+
+--- Clear query cache (useful for testing or after parser updates)
+function M.clear_query_cache()
+  query_cache = {}
+  parsing_locks = {}
+  log.debug('Query cache cleared')
+end
+
+--- Get cache statistics
+---@return table stats Cache statistics
+function M.get_cache_stats()
+  local stats = {
+    total_queries = 0,
+    cached_queries = {},
+    active_locks = 0,
+  }
+
+  for lang, queries in pairs(query_cache) do
+    stats.total_queries = stats.total_queries + vim.tbl_count(queries)
+    stats.cached_queries[lang] = vim.tbl_count(queries)
+  end
+
+  -- Count active parsing locks
+  for _, locked in pairs(parsing_locks) do
+    if locked then
+      stats.active_locks = stats.active_locks + 1
+    end
+  end
+
+  return stats
+end
+
+--- Validate that PHP parser is available
+---@return boolean success, string? error_message
+function M.validate_parser()
+  local has_ts, _ = pcall(require, 'nvim-treesitter.parsers')
+  if not has_ts then
+    return false, 'nvim-treesitter not available'
+  end
+
+  local has_php = parsers.has_parser('php')
+  if not has_php then
+    return false, 'PHP parser not installed. Run :TSInstall php'
+  end
+
+  return true, nil
+end
+
+--- Wait for lock to be released
+---@param lock_key string Lock key
+---@param timeout number Timeout in milliseconds
+---@return boolean success
+local function wait_for_lock(lock_key, timeout)
+  local start_time = vim.loop.hrtime()
+  local timeout_ns = timeout * 1000000 -- Convert to nanoseconds
+
+  while parsing_locks[lock_key] do
+    local elapsed = vim.loop.hrtime() - start_time
+    if elapsed > timeout_ns then
+      log.warn(string.format('Lock timeout for key: %s', lock_key))
+      return false
+    end
+
+    -- Small sleep to avoid busy-waiting
+    vim.wait(10, function()
+      return not parsing_locks[lock_key]
+    end)
+  end
+
+  return true
+end
+
+--- Parse query with compatibility for different TS APIs and caching
+---@param lang string Language name
+---@param query_string string Query string
+---@return table? query Parsed query or nil
+function M.parse_query(lang, query_string)
+  -- Initialize cache for language if needed
+  if not query_cache[lang] then
+    query_cache[lang] = {}
+  end
+
+  -- Use simple hash instead of SHA256
+  local cache_key = simple_hash(query_string)
+
+  -- Check cache first (fast path)
+  if query_cache[lang][cache_key] then
+    log.debug(string.format('Query cache hit for lang=%s (key=%s)', lang, cache_key))
+    return query_cache[lang][cache_key]
+  end
+
+  log.debug(string.format('Query cache miss for lang=%s (key=%s)', lang, cache_key))
+
+  -- Create lock key
+  local lock_key = lang .. ':' .. cache_key
+
+  -- Check if another thread is already parsing this query
+  if parsing_locks[lock_key] then
+    log.debug(string.format('Waiting for concurrent parse to complete: %s', lock_key))
+
+    -- Wait for the other parse to complete (max 1000ms)
+    local success = wait_for_lock(lock_key, 1000)
+
+    if success and query_cache[lang][cache_key] then
+      log.debug('Lock released, using cached result')
+      return query_cache[lang][cache_key]
+    elseif not success then
+      log.warn('Lock wait timeout, attempting parse anyway')
+    end
+  end
+
+  -- Acquire lock
+  parsing_locks[lock_key] = true
+  log.debug(string.format('Acquired parsing lock: %s', lock_key))
+
+  -- Parse the query (critical section)
+  local query = nil
+  local parse_ok = false
+  local parse_err = nil
+
+  -- Try different APIs for compatibility
   if vim.treesitter and vim.treesitter.query then
     if vim.treesitter.query.parse then
-      return vim.treesitter.query.parse(lang, query)
+      parse_ok, query = pcall(vim.treesitter.query.parse, lang, query_string)
     elseif vim.treesitter.query.parse_query then
-      return vim.treesitter.query.parse_query(lang, query)
+      parse_ok, query = pcall(vim.treesitter.query.parse_query, lang, query_string)
     end
   end
-  if ts and ts.query then
-    if ts.query.parse then
-      return ts.query.parse(lang, query)
+
+  if not parse_ok or not query then
+    if ts and ts.query and ts.query.parse then
+      parse_ok, query = pcall(ts.query.parse, lang, query_string)
     end
   end
-  error('No Tree-sitter query parsing function found')
+
+  -- Handle parse failure
+  if not parse_ok then
+    parse_err = query -- Error message is in query variable if pcall failed
+    log.error(string.format('Failed to parse query for %s: %s', lang, tostring(parse_err)))
+
+    -- Release lock before returning
+    parsing_locks[lock_key] = nil
+    log.debug(string.format('Released parsing lock (error): %s', lock_key))
+
+    return nil
+  end
+
+  if not query then
+    log.error('No Tree-sitter query parsing function found')
+
+    -- Release lock before returning
+    parsing_locks[lock_key] = nil
+    log.debug(string.format('Released parsing lock (no API): %s', lock_key))
+
+    return nil
+  end
+
+  -- Cache the successfully parsed query
+  query_cache[lang][cache_key] = query
+  log.debug(string.format('Cached query for lang=%s (key=%s)', lang, cache_key))
+
+  -- Release lock
+  parsing_locks[lock_key] = nil
+  log.debug(string.format('Released parsing lock (success): %s', lock_key))
+
+  return query
 end
 
 --- Get parser for buffer & lang with compatibility
+---@param bufnr number Buffer number
+---@param lang string Language name
+---@return table? parser Parser instance or nil
 function M.get_parser(bufnr, lang)
   if vim.treesitter.get_parser then
     return vim.treesitter.get_parser(bufnr, lang)
@@ -34,31 +209,47 @@ function M.get_parser(bufnr, lang)
 end
 
 --- Setup tree-sitter parser for current buffer and write into state
+---@param state table Plugin state
+---@return boolean success
 function M.set_treesitter_parser(state)
   local bufnr = vim.api.nvim_get_current_buf()
   state.bufnr = bufnr
 
   local ok, parser = pcall(M.get_parser, bufnr, 'php')
   if not ok or not parser then
+    log.debug(string.format('Failed to get parser for buffer %d: %s', bufnr, tostring(parser)))
     return false
   end
 
   local trees = parser:parse()
   if not trees or #trees == 0 then
+    log.debug('Parser returned no trees')
     return false
   end
 
   local tree = trees[1]
   if not tree then
+    log.debug('First tree is nil')
     return false
   end
 
   state.root = tree:root()
   state.lang = parser:lang()
-  return state.lang == 'php' and state.root ~= nil
+
+  local success = state.lang == 'php' and state.root ~= nil
+
+  if success then
+    log.debug(string.format('Parser setup successful for buffer %d', bufnr))
+  else
+    log.debug(string.format('Parser setup failed for buffer %d', bufnr))
+  end
+
+  return success
 end
 
 --- Check whether buffer contains class declaration
+---@param state table Plugin state
+---@return boolean has_class
 function M.has_class(state)
   if not M.set_treesitter_parser(state) then
     return false
@@ -69,6 +260,7 @@ function M.has_class(state)
 
   local ok, q = pcall(M.parse_query, state.lang, '(class_declaration) @class')
   if not ok or not q then
+    log.debug('Failed to parse class_declaration query')
     return false
   end
 
@@ -78,13 +270,40 @@ function M.has_class(state)
   return false
 end
 
---- Extract trait/const/property declarations within a given row range
--- returns traits, consts, properties, and rows table with _start/_end (0-based)
-function M.extract_range(state, start_row, end_row)
-  if not M.set_treesitter_parser(state) then
-    return {}, {}, {}, { _start = end_row, _end = start_row }
+--- Normalize row range, handling -1 as "end of buffer"
+---@param bufnr number Buffer number
+---@param start_row number Start row (0-based)
+---@param end_row number End row (0-based, -1 for end of buffer)
+---@return number start_row, number end_row Both normalized to valid values
+local function normalize_range(bufnr, start_row, end_row)
+  -- Ensure start_row is valid
+  start_row = math.max(0, start_row)
+
+  -- Handle -1 as "end of buffer"
+  if end_row == -1 then
+    end_row = vim.api.nvim_buf_line_count(bufnr) - 1
   end
 
+  -- Ensure end_row is not before start_row
+  end_row = math.max(start_row, end_row)
+
+  return start_row, end_row
+end
+
+--- Extract trait/const/property declarations within a given row range
+---@param state table Plugin state
+---@param start_row number Start row (0-based)
+---@param end_row number End row (0-based, -1 for end of buffer)
+---@return table traits, table consts, table properties, table rows
+function M.extract_range(state, start_row, end_row)
+  if not M.set_treesitter_parser(state) then
+    return {}, {}, {}, { _start = start_row, _end = end_row }
+  end
+
+  -- Normalize the range early to avoid confusion
+  start_row, end_row = normalize_range(state.bufnr, start_row, end_row)
+
+  -- Use cached query parsing
   local query_string = [[
     (use_declaration) @trait
     (const_declaration) @const
@@ -93,40 +312,69 @@ function M.extract_range(state, start_row, end_row)
 
   local ok, parsed_query = pcall(M.parse_query, state.lang, query_string)
   if not ok or not parsed_query then
-    return {}, {}, {}, { _start = end_row, _end = start_row }
+    log.error('Failed to parse range extraction query: ' .. tostring(parsed_query))
+    return {}, {}, {}, { _start = start_row, _end = end_row }
   end
 
   local captures = { trait = {}, const = {}, property = {} }
   local rows = { _start = end_row, _end = start_row }
 
-  for id, node in parsed_query:iter_captures(state.root, state.bufnr, start_row, end_row) do
+  -- Track statistics for debugging
+  local node_count = 0
+  local skipped_count = 0
+
+  -- Use normalized end_row consistently
+  for id, node in parsed_query:iter_captures(state.root, state.bufnr, start_row, end_row + 1) do
+    node_count = node_count + 1
+
     local capture_name = parsed_query.captures[id]
     if not captures[capture_name] then
+      skipped_count = skipped_count + 1
       goto continue
     end
 
-    local real_node_start_row = node:start()
-    local end_row_arg = end_row == -1 and real_node_start_row + 1 or end_row
+    local node_start_row = node:start()
 
-    if real_node_start_row < rows._start then
-      rows._start = real_node_start_row
+    -- Update row tracking
+    if node_start_row < rows._start then
+      rows._start = node_start_row
     end
-    if real_node_start_row > rows._end then
-      rows._end = real_node_start_row
+    if node_start_row > rows._end then
+      rows._end = node_start_row
     end
 
-    if real_node_start_row >= start_row and real_node_start_row <= end_row_arg then
+    -- Simplified range check with normalized values
+    if node_start_row >= start_row and node_start_row <= end_row then
       local prev_sibling = node:prev_sibling()
       local comment = prev_sibling and prev_sibling:type() == 'comment' and prev_sibling or nil
 
-      local node_start_row, _, node_end_row, _ = node:range()
-      local node_lines =
-          vim.api.nvim_buf_get_lines(state.bufnr, node_start_row, node_end_row + 1, false)
+      local node_start_line, _, node_end_line, _ = node:range()
+
+      -- Safe buffer line retrieval
+      local ok_lines, node_lines =
+        pcall(vim.api.nvim_buf_get_lines, state.bufnr, node_start_line, node_end_line + 1, false)
+
+      if not ok_lines then
+        log.warn(
+          string.format(
+            'Failed to get lines %d-%d from buffer %d',
+            node_start_line,
+            node_end_line,
+            state.bufnr
+          )
+        )
+        goto continue
+      end
 
       local comment_lines = nil
       if comment then
-        local c_start_row, _, c_end_row, _ = comment:range()
-        comment_lines = vim.api.nvim_buf_get_lines(state.bufnr, c_start_row, c_end_row + 1, false)
+        local c_start_line, _, c_end_line, _ = comment:range()
+        local ok_comment, c_lines =
+          pcall(vim.api.nvim_buf_get_lines, state.bufnr, c_start_line, c_end_line + 1, false)
+
+        if ok_comment then
+          comment_lines = c_lines
+        end
       end
 
       local candidate = {
@@ -137,10 +385,25 @@ function M.extract_range(state, start_row, end_row)
       }
 
       table.insert(captures[capture_name], candidate)
+    else
+      skipped_count = skipped_count + 1
     end
 
     ::continue::
   end
+
+  log.debug(
+    string.format(
+      'Extracted range [%d-%d]: %d traits, %d consts, %d properties (processed %d nodes, skipped %d)',
+      start_row,
+      end_row,
+      #captures.trait,
+      #captures.const,
+      #captures.property,
+      node_count,
+      skipped_count
+    )
+  )
 
   return captures.trait, captures.const, captures.property, rows
 end

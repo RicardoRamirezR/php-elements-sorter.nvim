@@ -1,5 +1,7 @@
+-- ============================================================================
 -- lua/php-elements-sorter/utils.lua
 -- General utilities: visibility, buffer updates, diagnostics
+-- ============================================================================
 
 local M = {}
 local ts = vim.treesitter
@@ -9,11 +11,16 @@ local vim_diagnostic = vim.diagnostic
 local VISIBILITY_VALUES = { private = 1, protected = 2, public = 3 }
 
 --- Is line empty or whitespace?
+---@param line string Line to check
+---@return boolean
 function M.is_empty_line(line)
   return line:match('^%s*$') ~= nil
 end
 
 --- Get visibility string from node (returns default if none)
+---@param node table Treesitter node
+---@param default_visibility string Default visibility
+---@return string visibility
 function M.get_visibility_string(node, default_visibility)
   if not node then
     return default_visibility or 'public'
@@ -27,6 +34,11 @@ function M.get_visibility_string(node, default_visibility)
 end
 
 --- Compare two statement entries (a,b) with optional visibility ordering
+---@param a table First statement
+---@param b table Second statement
+---@param compare_visibility boolean Whether to compare by visibility
+---@param default_visibility string Default visibility
+---@return boolean
 function M.compare_nodes(a, b, compare_visibility, default_visibility)
   if compare_visibility then
     local vis_a = VISIBILITY_VALUES[M.get_visibility_string(a.node, default_visibility)] or 0
@@ -41,13 +53,15 @@ function M.compare_nodes(a, b, compare_visibility, default_visibility)
 end
 
 --- Update buffer lines in 1-based inclusive range {min, max}
---- returns true if changed
+---@param range table Range with min and max
+---@param lines table Lines to set
+---@return boolean changed
 function M.update_buffer(range, lines)
   if not range or not lines then
     return false
   end
   local start_idx = math.max(0, range.min - 1)
-  local end_idx = range.max -- this is already 1-based inclusive, nvim get_lines end is exclusive
+  local end_idx = range.max
   local original = vim.api.nvim_buf_get_lines(0, start_idx, end_idx, false)
   if vim.deep_equal(original, lines) then
     return false
@@ -61,6 +75,8 @@ function M.update_buffer(range, lines)
 end
 
 --- Return true if diagnostics mark the row as unused (0-based row)
+---@param row number Row number (0-based)
+---@return boolean
 function M.is_unused(row)
   if not row then
     return false

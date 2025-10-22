@@ -1,0 +1,50 @@
+# ============================================================================
+# .gitignore
+# Git ignore patterns
+# ============================================================================
+
+# Neovim
+.nvim/
+.nvimrc
+
+# Lua
+luac.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
+doc/tags
+
+# Test coverage
+coverage/
+.coverage
+
+# Temporary files
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# Dependencies (if vendored)
+vendor/
+
+# Build artifacts
+*.rock
+*.src.rock
+
+# Test artifacts
+test-results/
+.test-results/
+

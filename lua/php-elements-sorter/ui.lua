@@ -1,17 +1,26 @@
+-- ============================================================================
 -- lua/php-elements-sorter/ui.lua
--- UI helpers: Telescope + vim.ui.select with nice formatting
+-- UI helpers with enhanced formatting
+-- ============================================================================
 
 local M = {}
 
 local has_telescope, _ = pcall(require, 'telescope')
 
---- Show code actions with Telescope using entry_display & widths
+--- Show code actions with Telescope
+---@param actions_list table List of actions
+---@param on_select function Selection callback
+---@return boolean used Whether Telescope was used
 function M.show_code_actions_with_telescope(actions_list, on_select)
   if not has_telescope then
     return false
   end
 
-  local pickers = require('telescope.pickers')
+  local ok, pickers = pcall(require, 'telescope.pickers')
+  if not ok then
+    return false
+  end
+
   local finders = require('telescope.finders')
   local conf = require('telescope.config').values
   local actions = require('telescope.actions')
@@ -27,7 +36,7 @@ function M.show_code_actions_with_telescope(actions_list, on_select)
       local title = tostring(action.title or ''):gsub('\r\n', '\\r\\n'):gsub('\n', '\\n')
       local client = tostring(
         action.is_lsp and action.client_name
-        or (action.is_custom and 'php-elements-sorter' or 'Unknown')
+          or (action.is_custom and 'php-elements-sorter' or 'Unknown')
       )
 
       local entry = {
@@ -61,47 +70,49 @@ function M.show_code_actions_with_telescope(actions_list, on_select)
     return displayer({
       { entry.value.idx .. ':', 'TelescopePromptPrefix' },
       { entry.value.title },
-      { entry.value.client,     'TelescopeResultsComment' },
+      { entry.value.client, 'TelescopeResultsComment' },
     })
   end
 
   pickers
-      .new({}, {
-        prompt_title = 'Code Actions (' .. #indexed_actions .. ' available)',
-        finder = finders.new_table({
-          results = indexed_actions,
-          entry_maker = function(entry)
-            return {
-              value = entry,
-              display = make_display,
-              ordinal = entry.idx .. ' ' .. entry.title .. ' ' .. entry.client,
-            }
-          end,
-        }),
-        sorter = conf.generic_sorter({}),
-        attach_mappings = function(prompt_bufnr)
-          actions.select_default:replace(function()
-            actions.close(prompt_bufnr)
-            local selection = action_state.get_selected_entry()
-            if selection and selection.value then
-              on_select(selection.value.action)
-            end
-          end)
-          return true
+    .new({}, {
+      prompt_title = 'Code Actions (' .. #indexed_actions .. ' available)',
+      finder = finders.new_table({
+        results = indexed_actions,
+        entry_maker = function(entry)
+          return {
+            value = entry,
+            display = make_display,
+            ordinal = entry.idx .. ' ' .. entry.title .. ' ' .. entry.client,
+          }
         end,
-        layout_config = {
-          prompt_position = 'top',
-          width = 0.7,
-          height = 0.7,
-        },
-        sorting_strategy = 'ascending',
-      })
-      :find()
+      }),
+      sorter = conf.generic_sorter({}),
+      attach_mappings = function(prompt_bufnr)
+        actions.select_default:replace(function()
+          actions.close(prompt_bufnr)
+          local selection = action_state.get_selected_entry()
+          if selection and selection.value then
+            on_select(selection.value.action)
+          end
+        end)
+        return true
+      end,
+      layout_config = {
+        prompt_position = 'top',
+        width = 0.7,
+        height = 0.7,
+      },
+      sorting_strategy = 'ascending',
+    })
+    :find()
 
   return true
 end
 
 --- Fallback UI: vim.ui.select
+---@param actions_list table List of actions
+---@param on_select function Selection callback
 function M.show_code_actions_with_ui_select(actions_list, on_select)
   for i, a in ipairs(actions_list) do
     a._index = i

@@ -338,7 +338,10 @@ function M.remove_unused_namespace_uses_impl(state)
 
   -- Step 1: Collect all use statement nodes with their line ranges
   local use_statements = {}
-  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+  for id, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    if query.captures[id] ~= 'use' then
+      goto skip_use
+    end
     local start_row, _, end_row, _ = node:range()
 
     -- Check if this use is unused
@@ -354,6 +357,7 @@ function M.remove_unused_namespace_uses_impl(state)
     if is_unused then
       log.debug(string.format('Found unused import at line %d', start_row + 1))
     end
+    ::skip_use::
   end
 
   -- Step 2: Count how many we'll remove

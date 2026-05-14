@@ -133,9 +133,9 @@ function M.show_diff_window(original_lines, sorted_lines, on_accept, on_cancel)
   -- Create buffer
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, diff_lines)
-  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'diff')
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = 'wipe'
+  vim.bo[buf].filetype = 'diff'
 
   -- Calculate window size
   local width = math.floor(vim.o.columns * 0.8)
@@ -157,14 +157,14 @@ function M.show_diff_window(original_lines, sorted_lines, on_accept, on_cancel)
   })
 
   -- Add footer with instructions
-  vim.api.nvim_buf_set_option(buf, 'modifiable', true)
+  vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, 0, false, {
     '# PHP Elements Sorter - Preview Mode',
     '# Press <CR> or "a" to apply changes',
     '# Press <Esc> or "q" to cancel',
     '',
   })
-  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+  vim.bo[buf].modifiable = false
 
   -- Setup keymaps
   local function close_window()
@@ -221,27 +221,22 @@ function M.preview_sort(sort_fn, bufnr)
 
   -- Create temporary buffer with same content
   local temp_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_option(temp_buf, 'filetype', vim.bo[bufnr].filetype)
+  vim.bo[temp_buf].filetype = vim.bo[bufnr].filetype
   vim.api.nvim_buf_set_lines(temp_buf, 0, -1, false, vim.deepcopy(original_lines))
 
-  -- Switch to temp buffer and sort
-  local original_buf = vim.api.nvim_get_current_buf()
-  vim.api.nvim_set_current_buf(temp_buf)
-
-  local ok, result = pcall(sort_fn)
+  -- Run sort inside temp buffer context without switching visible buffer
+  local ok, result
+  vim.api.nvim_buf_call(temp_buf, function()
+    ok, result = pcall(sort_fn)
+  end)
 
   if not ok then
     log.error('Sort function failed: ' .. tostring(result))
-    vim.api.nvim_set_current_buf(original_buf)
     vim.api.nvim_buf_delete(temp_buf, { force = true })
     return false
   end
 
-  -- Get sorted content
   local sorted_lines = vim.api.nvim_buf_get_lines(temp_buf, 0, -1, false)
-
-  -- Switch back to original buffer
-  vim.api.nvim_set_current_buf(original_buf)
   vim.api.nvim_buf_delete(temp_buf, { force = true })
 
   -- Show diff with callbacks

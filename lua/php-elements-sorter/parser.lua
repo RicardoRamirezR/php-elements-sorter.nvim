@@ -1,6 +1,6 @@
 -- ============================================================================
 -- lua/php-elements-sorter/parser.lua
--- Tree-sitter parser helpers and queries with validation and caching
+-- Tree-sitter parser helpers and queries with caching
 -- ============================================================================
 
 local M = {}
@@ -12,23 +12,6 @@ local log = require('php-elements-sorter.utils.log')
 -- Query cache to avoid repeated parsing
 local query_cache = {}
 
--- Parsing locks to prevent race conditions
-local parsing_locks = {}
-
--- Lock event listeners
-local lock_event_listeners = {}
-
--- Timer statistics
-local stats = {
-  created = 0,
-  stopped = 0,
-  completed = 0,
-  leaked = 0,
-}
-
--- Simple hash function (más rápido que SHA256)
----@param str string String to hash
----@return string hash
 local function simple_hash(str)
   local hash = 0
   for i = 1, #str do
@@ -37,35 +20,26 @@ local function simple_hash(str)
   return tostring(hash)
 end
 
---- Clear query cache (useful for testing or after parser updates)
+--- Clear query cache
 function M.clear_query_cache()
   query_cache = {}
-  parsing_locks = {}
   log.debug('Query cache cleared')
 end
 
 --- Get cache statistics
----@return table stats Cache statistics
+---@return table stats
 function M.get_cache_stats()
-  local stats = {
+  local result = {
     total_queries = 0,
     cached_queries = {},
-    active_locks = 0,
   }
 
   for lang, queries in pairs(query_cache) do
-    stats.total_queries = stats.total_queries + vim.tbl_count(queries)
-    stats.cached_queries[lang] = vim.tbl_count(queries)
+    result.total_queries = result.total_queries + vim.tbl_count(queries)
+    result.cached_queries[lang] = vim.tbl_count(queries)
   end
 
-  -- Count active parsing locks
-  for _, locked in pairs(parsing_locks) do
-    if locked then
-      stats.active_locks = stats.active_locks + 1
-    end
-  end
-
-  return stats
+  return result
 end
 
 --- Validate that PHP parser is available
@@ -84,147 +58,24 @@ function M.validate_parser()
   return true, nil
 end
 
---- Wait for lock to be released (EVENT-BASED, not busy-waiting)
----@param lock_key string Lock key
----@param timeout number Timeout in milliseconds
----@return boolean success
-local function wait_for_lock(lock_key, timeout)
-  if not parsing_locks[lock_key] then
-    return true -- Lock not held, proceed immediately
-  end
-
-  log.debug(string.format('Waiting for lock: %s (timeout: %dms)', lock_key, timeout))
-
-  local released = false
-  local listener_id = 'wait_' .. vim.loop.hrtime()
-
-  -- Register event listener for this lock
-  if not lock_event_listeners[lock_key] then
-    lock_event_listeners[lock_key] = {}
-  end
-
-  lock_event_listeners[lock_key][listener_id] = function()
-    released = true
-  end
-
-  -- Wait with proper event checking (no busy-wait)
-  local start_time = vim.loop.hrtime()
-  local timeout_ns = timeout * 1000000
-
-  local success = vim.wait(timeout, function()
-    -- Check if lock was released
-    if released or not parsing_locks[lock_key] then
-      return true
-    end
-
-    -- Check timeout
-    local elapsed = vim.loop.hrtime() - start_time
-    return elapsed >= timeout_ns
-  end, 50) -- Check every 50ms (reasonable interval)
-
-  -- Cleanup listener
-  if lock_event_listeners[lock_key] then
-    lock_event_listeners[lock_key][listener_id] = nil
-
-    -- Cleanup empty listener tables
-    if vim.tbl_count(lock_event_listeners[lock_key]) == 0 then
-      lock_event_listeners[lock_key] = nil
-    end
-  end
-
-  if success and (released or not parsing_locks[lock_key]) then
-    log.debug(string.format('Lock released: %s', lock_key))
-    return true
-  else
-    log.warn(string.format('Lock timeout for key: %s', lock_key))
-    return false
-  end
-end
-
---- Release a parsing lock and notify waiters
----@param lock_key string Lock key
-local function release_lock(lock_key)
-  if not parsing_locks[lock_key] then
-    return
-  end
-
-  parsing_locks[lock_key] = nil
-
-  -- Notify all waiting listeners
-  if lock_event_listeners[lock_key] then
-    for listener_id, listener_fn in pairs(lock_event_listeners[lock_key]) do
-      local ok, err = pcall(listener_fn)
-      if not ok then
-        log.warn(string.format('Listener error for lock %s: %s', lock_key, err))
-      end
-    end
-
-    -- Clear listeners after notification
-    lock_event_listeners[lock_key] = nil
-  end
-
-  log.debug(string.format('Released parsing lock: %s', lock_key))
-end
-
---- Acquire a parsing lock
----@param lock_key string Lock key
----@return boolean success
-local function acquire_lock(lock_key)
-  if parsing_locks[lock_key] then
-    return false
-  end
-
-  parsing_locks[lock_key] = true
-  log.debug(string.format('Acquired parsing lock: %s', lock_key))
-  return true
-end
-
 --- Parse query with compatibility for different TS APIs and caching
 ---@param lang string Language name
 ---@param query_string string Query string
 ---@return table? query Parsed query or nil
 function M.parse_query(lang, query_string)
-  -- Initialize cache for language if needed
   if not query_cache[lang] then
     query_cache[lang] = {}
   end
 
-  -- Use simple hash instead of SHA256
   local cache_key = simple_hash(query_string)
 
-  -- Check cache first (fast path)
   if query_cache[lang][cache_key] then
-    log.debug(string.format('Query cache hit for lang=%s (key=%s)', lang, cache_key))
     return query_cache[lang][cache_key]
   end
 
-  log.debug(string.format('Query cache miss for lang=%s (key=%s)', lang, cache_key))
-
-  -- Create lock key
-  local lock_key = lang .. ':' .. cache_key
-
-  -- Try to acquire lock
-  if not acquire_lock(lock_key) then
-    log.debug(string.format('Another thread is parsing: %s', lock_key))
-
-    -- Wait for the other parse to complete (max 1000ms)
-    local success = wait_for_lock(lock_key, 1000)
-
-    if success and query_cache[lang][cache_key] then
-      log.debug('Lock released, using cached result')
-      return query_cache[lang][cache_key]
-    elseif not success then
-      log.warn('Lock wait timeout, attempting parse anyway')
-      -- Continue to parse despite timeout
-    end
-  end
-
-  -- Parse the query (critical section)
   local query = nil
   local parse_ok = false
-  local parse_err = nil
 
-  -- Try different APIs for compatibility
   if vim.treesitter and vim.treesitter.query then
     if vim.treesitter.query.parse then
       parse_ok, query = pcall(vim.treesitter.query.parse, lang, query_string)
@@ -239,61 +90,18 @@ function M.parse_query(lang, query_string)
     end
   end
 
-  -- Handle parse failure
   if not parse_ok then
-    parse_err = query -- Error message is in query variable if pcall failed
-    log.error(string.format('Failed to parse query for %s: %s', lang, tostring(parse_err)))
-
-    -- Release lock before returning
-    release_lock(lock_key)
+    log.error(string.format('Failed to parse query for %s: %s', lang, tostring(query)))
     return nil
   end
 
   if not query then
     log.error('No Tree-sitter query parsing function found')
-
-    -- Release lock before returning
-    release_lock(lock_key)
     return nil
   end
 
-  -- Cache the successfully parsed query
   query_cache[lang][cache_key] = query
-  log.debug(string.format('Cached query for lang=%s (key=%s)', lang, cache_key))
-
-  -- Release lock (SUCCESS PATH)
-  release_lock(lock_key)
-
   return query
-end
-
---- Clear all parsing locks (useful for cleanup/testing)
-function M.clear_locks()
-  local count = vim.tbl_count(parsing_locks)
-  parsing_locks = {}
-  lock_event_listeners = {}
-  log.debug(string.format('Cleared %d parsing locks', count))
-  return count
-end
-
---- Get lock statistics
----@return table stats Lock statistics
-function M.get_lock_stats()
-  local active_locks = {}
-  for lock_key, _ in pairs(parsing_locks) do
-    table.insert(active_locks, lock_key)
-  end
-
-  local waiting_listeners = 0
-  for _, listeners in pairs(lock_event_listeners) do
-    waiting_listeners = waiting_listeners + vim.tbl_count(listeners)
-  end
-
-  return {
-    active_locks = #active_locks,
-    locks = active_locks,
-    waiting_listeners = waiting_listeners,
-  }
 end
 
 --- Get parser for buffer & lang with compatibility
@@ -362,7 +170,6 @@ function M.has_class(state)
 
   local ok, q = pcall(M.parse_query, state.lang, '(class_declaration) @class')
   if not ok or not q then
-    log.debug('Failed to parse class_declaration query')
     return false
   end
 
@@ -376,17 +183,14 @@ end
 ---@param bufnr number Buffer number
 ---@param start_row number Start row (0-based)
 ---@param end_row number End row (0-based, -1 for end of buffer)
----@return number start_row, number end_row Both normalized to valid values
+---@return number start_row, number end_row
 local function normalize_range(bufnr, start_row, end_row)
-  -- Ensure start_row is valid
   start_row = math.max(0, start_row)
 
-  -- Handle -1 as "end of buffer"
   if end_row == -1 then
     end_row = vim.api.nvim_buf_line_count(bufnr) - 1
   end
 
-  -- Ensure end_row is not before start_row
   end_row = math.max(start_row, end_row)
 
   return start_row, end_row
@@ -402,10 +206,8 @@ function M.extract_range(state, start_row, end_row)
     return {}, {}, {}, { _start = start_row, _end = end_row }
   end
 
-  -- Normalize the range early to avoid confusion
   start_row, end_row = normalize_range(state.bufnr, start_row, end_row)
 
-  -- Use cached query parsing
   local query_string = [[
     (use_declaration) @trait
     (const_declaration) @const
@@ -421,23 +223,14 @@ function M.extract_range(state, start_row, end_row)
   local captures = { trait = {}, const = {}, property = {} }
   local rows = { _start = end_row, _end = start_row }
 
-  -- Track statistics for debugging
-  local node_count = 0
-  local skipped_count = 0
-
-  -- Use normalized end_row consistently
   for id, node in parsed_query:iter_captures(state.root, state.bufnr, start_row, end_row + 1) do
-    node_count = node_count + 1
-
     local capture_name = parsed_query.captures[id]
     if not captures[capture_name] then
-      skipped_count = skipped_count + 1
       goto continue
     end
 
     local node_start_row = node:start()
 
-    -- Update row tracking
     if node_start_row < rows._start then
       rows._start = node_start_row
     end
@@ -445,26 +238,17 @@ function M.extract_range(state, start_row, end_row)
       rows._end = node_start_row
     end
 
-    -- Simplified range check with normalized values
     if node_start_row >= start_row and node_start_row <= end_row then
       local prev_sibling = node:prev_sibling()
       local comment = prev_sibling and prev_sibling:type() == 'comment' and prev_sibling or nil
 
       local node_start_line, _, node_end_line, _ = node:range()
 
-      -- Safe buffer line retrieval
       local ok_lines, node_lines =
-          pcall(vim.api.nvim_buf_get_lines, state.bufnr, node_start_line, node_end_line + 1, false)
+        pcall(vim.api.nvim_buf_get_lines, state.bufnr, node_start_line, node_end_line + 1, false)
 
       if not ok_lines then
-        log.warn(
-          string.format(
-            'Failed to get lines %d-%d from buffer %d',
-            node_start_line,
-            node_end_line,
-            state.bufnr
-          )
-        )
+        log.warn(string.format('Failed to get lines %d-%d from buffer %d', node_start_line, node_end_line, state.bufnr))
         goto continue
       end
 
@@ -472,40 +256,27 @@ function M.extract_range(state, start_row, end_row)
       if comment then
         local c_start_line, _, c_end_line, _ = comment:range()
         local ok_comment, c_lines =
-            pcall(vim.api.nvim_buf_get_lines, state.bufnr, c_start_line, c_end_line + 1, false)
-
+          pcall(vim.api.nvim_buf_get_lines, state.bufnr, c_start_line, c_end_line + 1, false)
         if ok_comment then
           comment_lines = c_lines
         end
       end
 
-      local candidate = {
+      table.insert(captures[capture_name], {
         node = node,
         comment = comment,
         node_lines = node_lines,
         comment_lines = comment_lines,
-      }
-
-      table.insert(captures[capture_name], candidate)
-    else
-      skipped_count = skipped_count + 1
+      })
     end
 
     ::continue::
   end
 
-  log.debug(
-    string.format(
-      'Extracted range [%d-%d]: %d traits, %d consts, %d properties (processed %d nodes, skipped %d)',
-      start_row,
-      end_row,
-      #captures.trait,
-      #captures.const,
-      #captures.property,
-      node_count,
-      skipped_count
-    )
-  )
+  log.debug(string.format(
+    'Extracted range [%d-%d]: %d traits, %d consts, %d properties',
+    start_row, end_row, #captures.trait, #captures.const, #captures.property
+  ))
 
   return captures.trait, captures.const, captures.property, rows
 end

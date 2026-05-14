@@ -24,8 +24,8 @@ M.config = {
   debug = false,
 }
 
--- Per-buffer state storage with weak keys for garbage collection
-local buffer_states = setmetatable({}, { __mode = 'k' })
+-- Per-buffer state storage (cleanup via BufDelete autocmd)
+local buffer_states = {}
 
 -- Global cleanup timer ID
 local cleanup_timer_id = nil
@@ -352,22 +352,25 @@ function M.preview_available()
   return preview.is_available()
 end
 
---- Setup code_action override for PHP files only
+-- Tracks whether we already patched vim.lsp.buf.code_action
+local code_action_patched = false
+
+--- Override vim.lsp.buf.code_action for PHP buffers.
+--- Chains with previous value so other plugins that also wrap it still work.
 local function setup_code_action_override()
-  -- Store original code_action
-  local orig_code_action = vim.lsp.buf.code_action
+  if code_action_patched then
+    return
+  end
+  code_action_patched = true
 
-  -- Create wrapper that checks filetype
-  vim.lsp.buf.code_action = function(ctx, opts)
-    local bufnr = vim.api.nvim_get_current_buf()
-    local ft = vim.bo[bufnr].filetype
+  local prev_code_action = vim.lsp.buf.code_action
 
-    if ft == 'php' then
-      log.debug('Intercepting code_action for PHP buffer ' .. bufnr)
-      M.code_action(ctx, opts)
+  vim.lsp.buf.code_action = function(opts)
+    if vim.bo.filetype == 'php' then
+      log.debug('Intercepting code_action for PHP buffer')
+      M.code_action(opts)
     else
-      -- Delegate to original for non-PHP files
-      orig_code_action(ctx, opts)
+      prev_code_action(opts)
     end
   end
 

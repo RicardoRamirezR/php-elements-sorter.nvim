@@ -83,8 +83,29 @@ function M.is_unused(row)
   end
   local diags = vim_diagnostic.get(0, { lnum = row })
   for _, d in ipairs(diags) do
-    local msg = d.message or ''
-    if msg:match('is not used') or msg:match('is declared but not used') then
+    -- Check LSP diagnostic tags first (language-agnostic)
+    if d.tags then
+      for _, tag in ipairs(d.tags) do
+        if tag == vim_diagnostic.severity.HINT or tag == 1 then
+          return true
+        end
+      end
+    end
+    if d._tags then
+      for _, tag in ipairs(d._tags) do
+        if tag == 1 then -- DiagnosticTag.Unnecessary
+          return true
+        end
+      end
+    end
+    -- Fallback: match common message patterns from various LSP servers
+    local msg = (d.message or ''):lower()
+    if msg:match('not used')
+      or msg:match('unused')
+      or msg:match('never read')
+      or msg:match('never used')
+      or msg:match('no se usa')
+    then
       return true
     end
   end

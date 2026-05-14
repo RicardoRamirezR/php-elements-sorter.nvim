@@ -1,9 +1,8 @@
 -- lua/tests/spacing_utils_spec.lua
--- Tests para las nuevas spacing utilities (Mejora #4)
 
 local spacing_utils = require('php-elements-sorter.utils.spacing')
 
-describe('Spacing Utils - Mejora #4', function()
+describe('Spacing Utils', function()
   local bufnr
 
   before_each(function()

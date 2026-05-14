@@ -1,7 +1,6 @@
 -- ============================================================================
 -- lua/php-elements-sorter/parser.lua
 -- Tree-sitter parser helpers and queries with validation and caching
--- MEJORA #2: Query cache con locks y hash simplificado
 -- ============================================================================
 
 local M = {}
@@ -15,6 +14,17 @@ local query_cache = {}
 
 -- Parsing locks to prevent race conditions
 local parsing_locks = {}
+
+-- Lock event listeners
+local lock_event_listeners = {}
+
+-- Timer statistics
+local stats = {
+  created = 0,
+  stopped = 0,
+  completed = 0,
+  leaked = 0,
+}
 
 -- Simple hash function (más rápido que SHA256)
 ---@param str string String to hash
@@ -74,27 +84,98 @@ function M.validate_parser()
   return true, nil
 end
 
---- Wait for lock to be released
+--- Wait for lock to be released (EVENT-BASED, not busy-waiting)
 ---@param lock_key string Lock key
 ---@param timeout number Timeout in milliseconds
 ---@return boolean success
 local function wait_for_lock(lock_key, timeout)
-  local start_time = vim.loop.hrtime()
-  local timeout_ns = timeout * 1000000 -- Convert to nanoseconds
-
-  while parsing_locks[lock_key] do
-    local elapsed = vim.loop.hrtime() - start_time
-    if elapsed > timeout_ns then
-      log.warn(string.format('Lock timeout for key: %s', lock_key))
-      return false
-    end
-
-    -- Small sleep to avoid busy-waiting
-    vim.wait(10, function()
-      return not parsing_locks[lock_key]
-    end)
+  if not parsing_locks[lock_key] then
+    return true -- Lock not held, proceed immediately
   end
 
+  log.debug(string.format('Waiting for lock: %s (timeout: %dms)', lock_key, timeout))
+
+  local released = false
+  local listener_id = 'wait_' .. vim.loop.hrtime()
+
+  -- Register event listener for this lock
+  if not lock_event_listeners[lock_key] then
+    lock_event_listeners[lock_key] = {}
+  end
+
+  lock_event_listeners[lock_key][listener_id] = function()
+    released = true
+  end
+
+  -- Wait with proper event checking (no busy-wait)
+  local start_time = vim.loop.hrtime()
+  local timeout_ns = timeout * 1000000
+
+  local success = vim.wait(timeout, function()
+    -- Check if lock was released
+    if released or not parsing_locks[lock_key] then
+      return true
+    end
+
+    -- Check timeout
+    local elapsed = vim.loop.hrtime() - start_time
+    return elapsed >= timeout_ns
+  end, 50) -- Check every 50ms (reasonable interval)
+
+  -- Cleanup listener
+  if lock_event_listeners[lock_key] then
+    lock_event_listeners[lock_key][listener_id] = nil
+
+    -- Cleanup empty listener tables
+    if vim.tbl_count(lock_event_listeners[lock_key]) == 0 then
+      lock_event_listeners[lock_key] = nil
+    end
+  end
+
+  if success and (released or not parsing_locks[lock_key]) then
+    log.debug(string.format('Lock released: %s', lock_key))
+    return true
+  else
+    log.warn(string.format('Lock timeout for key: %s', lock_key))
+    return false
+  end
+end
+
+--- Release a parsing lock and notify waiters
+---@param lock_key string Lock key
+local function release_lock(lock_key)
+  if not parsing_locks[lock_key] then
+    return
+  end
+
+  parsing_locks[lock_key] = nil
+
+  -- Notify all waiting listeners
+  if lock_event_listeners[lock_key] then
+    for listener_id, listener_fn in pairs(lock_event_listeners[lock_key]) do
+      local ok, err = pcall(listener_fn)
+      if not ok then
+        log.warn(string.format('Listener error for lock %s: %s', lock_key, err))
+      end
+    end
+
+    -- Clear listeners after notification
+    lock_event_listeners[lock_key] = nil
+  end
+
+  log.debug(string.format('Released parsing lock: %s', lock_key))
+end
+
+--- Acquire a parsing lock
+---@param lock_key string Lock key
+---@return boolean success
+local function acquire_lock(lock_key)
+  if parsing_locks[lock_key] then
+    return false
+  end
+
+  parsing_locks[lock_key] = true
+  log.debug(string.format('Acquired parsing lock: %s', lock_key))
   return true
 end
 
@@ -122,9 +203,9 @@ function M.parse_query(lang, query_string)
   -- Create lock key
   local lock_key = lang .. ':' .. cache_key
 
-  -- Check if another thread is already parsing this query
-  if parsing_locks[lock_key] then
-    log.debug(string.format('Waiting for concurrent parse to complete: %s', lock_key))
+  -- Try to acquire lock
+  if not acquire_lock(lock_key) then
+    log.debug(string.format('Another thread is parsing: %s', lock_key))
 
     -- Wait for the other parse to complete (max 1000ms)
     local success = wait_for_lock(lock_key, 1000)
@@ -134,12 +215,9 @@ function M.parse_query(lang, query_string)
       return query_cache[lang][cache_key]
     elseif not success then
       log.warn('Lock wait timeout, attempting parse anyway')
+      -- Continue to parse despite timeout
     end
   end
-
-  -- Acquire lock
-  parsing_locks[lock_key] = true
-  log.debug(string.format('Acquired parsing lock: %s', lock_key))
 
   -- Parse the query (critical section)
   local query = nil
@@ -167,9 +245,7 @@ function M.parse_query(lang, query_string)
     log.error(string.format('Failed to parse query for %s: %s', lang, tostring(parse_err)))
 
     -- Release lock before returning
-    parsing_locks[lock_key] = nil
-    log.debug(string.format('Released parsing lock (error): %s', lock_key))
-
+    release_lock(lock_key)
     return nil
   end
 
@@ -177,9 +253,7 @@ function M.parse_query(lang, query_string)
     log.error('No Tree-sitter query parsing function found')
 
     -- Release lock before returning
-    parsing_locks[lock_key] = nil
-    log.debug(string.format('Released parsing lock (no API): %s', lock_key))
-
+    release_lock(lock_key)
     return nil
   end
 
@@ -187,11 +261,39 @@ function M.parse_query(lang, query_string)
   query_cache[lang][cache_key] = query
   log.debug(string.format('Cached query for lang=%s (key=%s)', lang, cache_key))
 
-  -- Release lock
-  parsing_locks[lock_key] = nil
-  log.debug(string.format('Released parsing lock (success): %s', lock_key))
+  -- Release lock (SUCCESS PATH)
+  release_lock(lock_key)
 
   return query
+end
+
+--- Clear all parsing locks (useful for cleanup/testing)
+function M.clear_locks()
+  local count = vim.tbl_count(parsing_locks)
+  parsing_locks = {}
+  lock_event_listeners = {}
+  log.debug(string.format('Cleared %d parsing locks', count))
+  return count
+end
+
+--- Get lock statistics
+---@return table stats Lock statistics
+function M.get_lock_stats()
+  local active_locks = {}
+  for lock_key, _ in pairs(parsing_locks) do
+    table.insert(active_locks, lock_key)
+  end
+
+  local waiting_listeners = 0
+  for _, listeners in pairs(lock_event_listeners) do
+    waiting_listeners = waiting_listeners + vim.tbl_count(listeners)
+  end
+
+  return {
+    active_locks = #active_locks,
+    locks = active_locks,
+    waiting_listeners = waiting_listeners,
+  }
 end
 
 --- Get parser for buffer & lang with compatibility
@@ -352,7 +454,7 @@ function M.extract_range(state, start_row, end_row)
 
       -- Safe buffer line retrieval
       local ok_lines, node_lines =
-        pcall(vim.api.nvim_buf_get_lines, state.bufnr, node_start_line, node_end_line + 1, false)
+          pcall(vim.api.nvim_buf_get_lines, state.bufnr, node_start_line, node_end_line + 1, false)
 
       if not ok_lines then
         log.warn(
@@ -370,7 +472,7 @@ function M.extract_range(state, start_row, end_row)
       if comment then
         local c_start_line, _, c_end_line, _ = comment:range()
         local ok_comment, c_lines =
-          pcall(vim.api.nvim_buf_get_lines, state.bufnr, c_start_line, c_end_line + 1, false)
+            pcall(vim.api.nvim_buf_get_lines, state.bufnr, c_start_line, c_end_line + 1, false)
 
         if ok_comment then
           comment_lines = c_lines

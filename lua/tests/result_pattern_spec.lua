@@ -1,9 +1,8 @@
 -- lua/tests/result_pattern_spec.lua
--- Tests para el Result pattern (Mejora #5)
 
 local Result = require('php-elements-sorter.utils.result')
 
-describe('Result Pattern - Mejora #5', function()
+describe('Result Pattern', function()
   describe('Basic construction', function()
     it('should create successful result with ok()', function()
       local result = Result.ok(42)

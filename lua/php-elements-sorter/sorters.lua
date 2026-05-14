@@ -1,7 +1,6 @@
 -- ============================================================================
 -- lua/php-elements-sorter/sorters.lua
 -- Sorting logic with statistics tracking
--- MEJORAS: #1 Buffer modifications atómicas + #4 Spacing utilities
 -- ============================================================================
 
 local M = {}
@@ -322,41 +321,124 @@ end
 ---@return number count Number of uses removed
 function M.remove_unused_namespace_uses_impl(state)
   if not state.config.remove_unused_imports then
+    log.debug('Unused imports removal disabled in config')
     return 0
   end
+
   if not parser.set_treesitter_parser(state) then
+    log.warn('Failed to setup treesitter parser for unused imports')
     return 0
   end
 
   local ok, query = pcall(parser.parse_query, state.lang, '(namespace_use_declaration) @use')
   if not ok or not query then
+    log.error('Failed to parse namespace use query: ' .. tostring(query))
     return 0
   end
 
-  local uses = {}
+  -- Step 1: Collect all use statement nodes with their line ranges
+  local use_statements = {}
   for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
-    table.insert(uses, node)
-  end
+    local start_row, _, end_row, _ = node:range()
 
-  -- Collect all removals (in reverse order to avoid offset issues)
-  local to_remove = {}
-  for i = #uses, 1, -1 do
-    if utils.is_unused(uses[i]:start()) then
-      local s, _, e, _ = uses[i]:range()
-      table.insert(to_remove, { start_line = s, end_line = e + 1 })
+    -- Check if this use is unused
+    local is_unused = utils.is_unused(start_row)
+
+    table.insert(use_statements, {
+      node = node,
+      start_line = start_row,
+      end_line = end_row,
+      is_unused = is_unused,
+    })
+
+    if is_unused then
+      log.debug(string.format('Found unused import at line %d', start_row + 1))
     end
   end
 
-  -- Apply removals one by one (already in reverse order)
-  local removed_count = 0
-  for _, removal in ipairs(to_remove) do
-    local ok = apply_single_modification(state.bufnr, removal.start_line, removal.end_line, {})
-    if ok then
-      removed_count = removed_count + 1
+  -- Step 2: Count how many we'll remove
+  local unused_count = 0
+  for _, use_stmt in ipairs(use_statements) do
+    if use_stmt.is_unused then
+      unused_count = unused_count + 1
     end
   end
 
-  return removed_count
+  if unused_count == 0 then
+    log.debug('No unused imports found')
+    return 0
+  end
+
+  log.debug(string.format('Found %d unused imports to remove', unused_count))
+
+  -- Step 3: Read entire buffer into memory (ATOMIC OPERATION STARTS HERE)
+  local ok_read, all_lines = pcall(vim.api.nvim_buf_get_lines, state.bufnr, 0, -1, false)
+
+  if not ok_read or not all_lines then
+    log.error('Failed to read buffer for atomic operation: ' .. tostring(all_lines))
+    return 0
+  end
+
+  -- Step 4: Mark lines for deletion (tombstone pattern)
+  -- Create a set of line numbers to remove (1-based)
+  local lines_to_remove = {}
+
+  for _, use_stmt in ipairs(use_statements) do
+    if use_stmt.is_unused then
+      -- Mark all lines in this use statement for removal
+      for line_num = use_stmt.start_line + 1, use_stmt.end_line + 1 do
+        lines_to_remove[line_num] = true
+      end
+
+      log.debug(
+        string.format(
+          'Marking lines %d-%d for removal',
+          use_stmt.start_line + 1,
+          use_stmt.end_line + 1
+        )
+      )
+    end
+  end
+
+  -- Step 5: Build new lines array (filter out marked lines)
+  local new_lines = {}
+  local removed_lines = 0
+
+  for i, line in ipairs(all_lines) do
+    if lines_to_remove[i] then
+      removed_lines = removed_lines + 1
+      log.debug(string.format('Removing line %d: %s', i, line))
+    else
+      table.insert(new_lines, line)
+    end
+  end
+
+  -- Step 6: Verify we're actually removing something
+  if removed_lines == 0 then
+    log.warn('No lines were marked for removal despite finding unused imports')
+    return 0
+  end
+
+  -- Step 7: Apply changes in ONE ATOMIC OPERATION
+  local ok_write, err = pcall(vim.api.nvim_buf_set_lines, state.bufnr, 0, -1, false, new_lines)
+
+  if not ok_write then
+    log.error('Failed to apply atomic buffer update: ' .. tostring(err))
+    return 0
+  end
+
+  log.info(
+    string.format('Removed %d unused imports (%d lines) atomically', unused_count, removed_lines)
+  )
+
+  -- Step 8: Clean up any resulting duplicate blank lines
+  vim.schedule(function()
+    if vim.api.nvim_buf_is_valid(state.bufnr) then
+      spacing_utils.normalize_spacing_in_range(state.bufnr, 0, -1)
+    end
+  end)
+
+  return unused_count
 end
 
 --- Process elements per class or globally

@@ -1,7 +1,5 @@
 -- ============================================================================
 -- lua/php-elements-sorter/utils/result.lua
--- MEJORA #5: Result pattern para manejo robusto de errores
--- FIXED: Complete implementation with method chaining support
 -- ============================================================================
 
 local M = {}
@@ -56,10 +54,6 @@ end
 function M.is_err(result)
   return result and result.success == false
 end
-
--- ============================================================================
--- Method Chaining Methods (OOP style)
--- ============================================================================
 
 --- Map over result value if successful (method)
 ---@param fn function Function to transform value
@@ -126,10 +120,6 @@ function Result_mt:unwrap_or_else(fn)
   return fn(self.error)
 end
 
--- ============================================================================
--- Functional Style Wrappers (for compatibility)
--- ============================================================================
-
 --- Map over result value if successful (functional style)
 ---@param result table Result object
 ---@param fn function Function to transform value
@@ -169,10 +159,6 @@ end
 function M.unwrap_or_else(result, fn)
   return result:unwrap_or_else(fn)
 end
-
--- ============================================================================
--- Additional Helper Functions
--- ============================================================================
 
 --- Execute function and wrap result
 ---@param fn function Function to execute

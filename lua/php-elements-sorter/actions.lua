@@ -1,7 +1,6 @@
 -- ============================================================================
 -- lua/php-elements-sorter/actions.lua
--- Code actions - Refactored to use Result pattern
--- MEJORA #5: Result pattern para mejor manejo de errores
+-- Code actions - Using simplified LSP validation
 -- ============================================================================
 
 local M = {}
@@ -47,66 +46,6 @@ local function plugin_actions()
       is_custom = true,
     },
   }
-end
-
---- Build safe diagnostic from Neovim diagnostic using Result
----@param nvim_diag table Neovim diagnostic
----@return table result Result with safe diagnostic or error
-local function build_safe_diagnostic(nvim_diag)
-  -- Check if diagnostic has LSP data
-  local lsp_data = nvim_diag.user_data and nvim_diag.user_data.lsp
-
-  if not lsp_data then
-    return Result.err('Diagnostic missing LSP data')
-  end
-
-  if not lsp_data.range then
-    return Result.err('Diagnostic missing range')
-  end
-
-  local range = lsp_data.range
-
-  -- Validate range
-  if not lsp.is_valid_range(range) then
-    return Result.err('Invalid LSP range')
-  end
-
-  -- Build safe diagnostic
-  return Result.ok({
-    range = {
-      start = { line = range.start.line, character = range.start.character },
-      ['end'] = { line = range['end'].line, character = range['end'].character },
-    },
-    message = lsp_data.message or nvim_diag.message or '',
-    severity = lsp_data.severity or nvim_diag.severity,
-    code = lsp_data.code or nvim_diag.code,
-    source = lsp_data.source or nvim_diag.source,
-  })
-end
-
---- Build safe diagnostics from Neovim diagnostics
----@param diagnostics table Neovim diagnostics
----@return table safe_diagnostics
-local function build_safe_diagnostics(diagnostics)
-  local safe = {}
-  local skipped = 0
-
-  for _, nvim_diag in ipairs(diagnostics) do
-    local result = build_safe_diagnostic(nvim_diag)
-
-    if Result.is_ok(result) then
-      table.insert(safe, result.value)
-    else
-      skipped = skipped + 1
-      log.debug('Skipped diagnostic: ' .. result.error)
-    end
-  end
-
-  if skipped > 0 then
-    log.debugf('Skipped %d diagnostics with invalid data', skipped)
-  end
-
-  return safe
 end
 
 --- Show actions using the available UI method
@@ -233,38 +172,20 @@ local function execute_action(action)
   return final_result
 end
 
---- Build LSP range params using Result pattern
----@param bufnr number Buffer number
----@param encoding string LSP encoding
----@return table result Result with params or error
-local function build_range_params(bufnr, encoding)
-  local current_win = vim.api.nvim_get_current_buf()
-
-  return Result.try(function()
-    local params = vim.lsp.util.make_range_params(current_win, encoding)
-
-    if type(params) ~= 'table' then
-      error('Range params is not a table')
-    end
-
-    return params
-  end, 'build_range_params')
-end
-
---- Build context for LSP request using Result pattern
+--- Build safe context for LSP request using simplified validation
 ---@param ctx table Context
 ---@param opts table Options
 ---@return table result Result with context or error
 local function build_safe_context(ctx, opts)
   return Result.try(function()
-    local safe_context = {}
+    local safe_context = { diagnostics = {} }
 
     if opts and opts.only then
       safe_context.only = opts.only
     end
 
     if ctx.diagnostics and tbl.count(ctx.diagnostics) > 0 then
-      local safe_diagnostics = build_safe_diagnostics(ctx.diagnostics)
+      local safe_diagnostics = lsp.build_safe_diagnostics(ctx.diagnostics)
       if #safe_diagnostics > 0 then
         safe_context.diagnostics = safe_diagnostics
       end
@@ -274,30 +195,21 @@ local function build_safe_context(ctx, opts)
   end, 'build_context')
 end
 
---- Build complete LSP request params using Result pattern
+--- Build complete LSP request params using simplified validation
 ---@param bufnr number Buffer number
 ---@param encoding string LSP encoding
 ---@param ctx table Context
 ---@param opts table Options
 ---@return table result Result with params or error
 local function build_request_params(bufnr, encoding, ctx, opts)
-  -- Build range params
-  local params_result = build_range_params(bufnr, encoding)
-  if Result.is_err(params_result) then
-    return params_result
-  end
-
-  local params = params_result.value
-
-  -- Build context
-  local context_result = build_safe_context(ctx, opts)
-  if Result.is_err(context_result) then
-    return context_result
-  end
-
-  params.context = context_result.value
-
-  return Result.ok(params)
+  -- Build range params using new LSP utilities
+  return lsp.build_range_params(encoding):and_then(function(params)
+    -- Build context
+    return build_safe_context(ctx, opts):map(function(safe_context)
+      params.context = safe_context
+      return params
+    end)
+  end)
 end
 
 --- Gather LSP code actions and merge with plugin actions, then show UI
@@ -313,13 +225,14 @@ function M.code_action(state, ctx, opts)
   local first_client = vim.lsp.get_clients({ bufnr = bufnr })[1]
   local encoding = first_client and first_client.offset_encoding or 'utf-16'
 
-  -- Build context range
+  -- Build context range using simplified validation
   if not ctx.range then
-    local range_result = Result.from_vim_api(vim.lsp.util.make_range_params, encoding)
+    local range_result = lsp.build_range_params(encoding)
 
     if Result.is_ok(range_result) and range_result.value.range then
       ctx.range = range_result.value.range
     else
+      log.debug('Using default range: ' .. (range_result.error or 'unknown error'))
       ctx.range = lsp.default_range()
     end
   end
@@ -341,7 +254,7 @@ function M.code_action(state, ctx, opts)
     return
   end
 
-  -- Build LSP request params using Result pattern
+  -- Build LSP request params using simplified validation
   local params_result = build_request_params(bufnr, encoding, ctx, opts)
 
   if Result.is_err(params_result) then

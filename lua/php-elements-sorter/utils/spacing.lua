@@ -1,6 +1,5 @@
 -- ============================================================================
 -- lua/php-elements-sorter/utils/spacing.lua
--- MEJORA #4: Utilidades centralizadas para manejo de spacing
 -- ============================================================================
 
 local M = {}

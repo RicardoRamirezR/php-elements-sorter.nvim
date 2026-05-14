@@ -1,67 +1,2412 @@
-*nvim-plugin-template.txt*     For NVIM v0.8.0     Last change: 2024 August 27
+-- File: ftplugin/php/php-elements-sorter.lua
+if not vim.g.loaded_php_sorter then
+  require('php-elements-sorter').setup()
+end
 
-==============================================================================
-Table of Contents                     *nvim-plugin-template-table-of-contents*
+vim.g.loaded_php_sorter = true
 
-1. nvim-plugin-template            |nvim-plugin-template-nvim-plugin-template|
-  - Usage                    |nvim-plugin-template-nvim-plugin-template-usage|
-  - Format                  |nvim-plugin-template-nvim-plugin-template-format|
-  - Test                      |nvim-plugin-template-nvim-plugin-template-test|
-  - CI                          |nvim-plugin-template-nvim-plugin-template-ci|
-  - More                      |nvim-plugin-template-nvim-plugin-template-more|
-  - License MIT        |nvim-plugin-template-nvim-plugin-template-license-mit|
+-- End of ftplugin/php/php-elements-sorter.lua
 
-==============================================================================
-1. nvim-plugin-template            *nvim-plugin-template-nvim-plugin-template*
+-- File: tests/minimal_init.lua
+-- Minimal init for testing
+local data_dir = vim.fn.stdpath('data') .. '/site/pack/vendor/start'
+local treesitter_dir = data_dir .. '/nvim-treesitter'
 
-Neovim plugin template; includes automatic documentation generation from
-README, integration tests with Busted, and linting with Stylua
+-- Determine Plenary location (try lazy.nvim first, then vendor)
+local plenary_dir = vim.fn.stdpath('data') .. '/lazy/plenary.nvim'
+if vim.fn.isdirectory(plenary_dir) == 0 then
+  plenary_dir = vim.fn.stdpath('data') .. '/site/pack/vendor/start/plenary.nvim'
+end
+-- Ensure data directory exists
+vim.fn.mkdir(data_dir, 'p')
 
+-- Clone plenary if not present
+if vim.fn.isdirectory(plenary_dir) == 0 then
+  vim.fn.system({
+    'git',
+    'clone',
+    '--depth=1',
+    'https://github.com/nvim-lua/plenary.nvim',
+    plenary_dir,
+  })
+end
+vim.opt.rtp:prepend(plenary_dir)
 
-USAGE                        *nvim-plugin-template-nvim-plugin-template-usage*
+-- Clone nvim-treesitter if not present
+if vim.fn.isdirectory(treesitter_dir) == 0 then
+  vim.fn.system({
+    'git',
+    'clone',
+    '--depth=1',
+    'https://github.com/nvim-treesitter/nvim-treesitter',
+    treesitter_dir,
+  })
+end
+vim.opt.rtp:prepend(treesitter_dir)
 
-1. Click `use this template` button generate a repo on your github.
-2. Clone your plugin repo. Open terminal then cd plugin directory.
-3. Run `python3 rename.py your-plugin-name`. This will replace all `nvim-plugin-template` to your `plugin-name`.
-Then it will prompt you input `y` or `n` to remove example codes in `init.lua` and
-`test/plugin_spec.lua`. If you are familiar this repo just input `y`. If you are looking at this template for the first time I suggest you inspect the contents. After this step `rename.py` will also auto-remove.
+-- Add current plugin to runtime path
+vim.opt.rtp:append('.')
 
-Now you have a clean plugin environment. Enjoy!
+-- Try to setup treesitter
+local function setup_treesitter()
+  local ts_ok, ts_configs = pcall(require, 'nvim-treesitter.configs')
+  if not ts_ok then
+    print('Warning: nvim-treesitter not available')
+    return false
+  end
 
+  -- Load treesitter runtime
+  vim.cmd('silent! runtime! plugin/nvim-treesitter.lua')
 
-FORMAT                      *nvim-plugin-template-nvim-plugin-template-format*
+  -- Setup treesitter
+  ts_configs.setup({
+    ensure_installed = {},
+    sync_install = false,
+    auto_install = false,
+  })
 
-The CI uses `stylua` to format the code; customize the formatting by editing
-`.stylua.toml`.
+  -- Check if PHP parser is available
+  local parser_ok, parsers = pcall(require, 'nvim-treesitter.parsers')
+  if parser_ok then
+    local has_php = parsers.has_parser('php')
+    if not has_php then
+      print('PHP parser not installed. Attempting to install...')
+      -- Try to install PHP parser
+      local install_ok = pcall(vim.cmd, 'TSInstall php')
+      if not install_ok then
+        print('Warning: Could not install PHP parser automatically')
+        print('Please run :TSInstall php manually')
+        return false
+      end
+    else
+      print('PHP parser is available')
+    end
+  else
+    print('Warning: Could not check for PHP parser')
+    return false
+  end
 
+  return true
+end
 
-TEST                          *nvim-plugin-template-nvim-plugin-template-test*
+-- Setup treesitter or provide mock
+if not setup_treesitter() then
+  print('Setting up treesitter mock for testing...')
+  -- Mock treesitter modules if they're not available
+  package.loaded['nvim-treesitter.parsers'] = {
+    get_parser = function()
+      return {
+        parse = function()
+          return {
+            root = function()
+              return {}
+            end,
+          }
+        end,
+        trees = function()
+          return {}
+        end,
+      }
+    end,
+    has_parser = function()
+      return false
+    end,
+  }
 
-Uses busted <https://lunarmodules.github.io/busted/> for testing. Installs by
-using `luarocks --lua-version=5.1 install vusted` then runs `vusted ./test` for
-your test cases. `vusted` is a wrapper of Busted especially for testing Neovim
-plugins.
+  package.loaded['nvim-treesitter'] = {
+    get_parser = function()
+      return {
+        parse = function()
+          return {}
+        end,
+      }
+    end,
+  }
+end
 
-Create test cases in the `test` folder. Busted expects files in this directory
-to be named `foo_spec.lua`, with `_spec` as a suffix before the `.lua` file
-extension. For more usage details please check busted usage
-<https://lunarmodules.github.io/busted/>
+-- Ensure PHP filetype is set correctly
+vim.cmd([[
+  augroup TestPHP
+    autocmd!
+    autocmd BufRead,BufNewFile *.php set filetype=php
+  augroup END
+]])
 
+print('Minimal init loaded successfully')
+print('Plenary path: ' .. plenary_dir)
+print('Treesitter path: ' .. treesitter_dir)
+print('Plugin path: ' .. vim.fn.getcwd())
 
-CI                              *nvim-plugin-template-nvim-plugin-template-ci*
+-- End of tests/minimal_init.lua
 
-- Auto generates doc from README.
-- Runs the Busted/vusted integration tests
-- Lints with `stylua`.
+-- File: lua/php-elements-sorter/sorters.lua
+-- lua/php-elements-sorter/sorters.lua
+-- Sorting logic for uses/constants/properties/traits, with correct visibility spacing
 
+local M = {}
+local parser = require('php-elements-sorter.parser')
+local utils = require('php-elements-sorter.utils')
+local spacing = require('php-elements-sorter.spacing')
 
-MORE                          *nvim-plugin-template-nvim-plugin-template-more*
+local ts = vim.treesitter
+local get_node_text = ts.get_node_text
 
-To see this template in action, take a look at my other plugins.
+--- Generic sort + update for a list of statements.
+-- Ensures:
+--  * properties: single blank line between different visibilities (if config enabled)
+--  * optional newline between const -> property (state.prev_type preserved)
+--  * single blank line before and after the whole block
+local function sort_and_update(state, statements, compare_fn, is_property)
+  if not statements or #statements == 0 then
+    return false
+  end
 
+  -- compute original range (1-based)
+  local range = { min = math.huge, max = 0 }
+  for _, st in ipairs(statements) do
+    local s, _, e, _ = st.node:range()
+    range.min = math.min(range.min, s + 1)
+    range.max = math.max(range.max, e + 1)
+  end
 
-LICENSE MIT            *nvim-plugin-template-nvim-plugin-template-license-mit*
+  -- preserve original textual order for change detection
+  local original_order = {}
+  for _, st in ipairs(statements) do
+    table.insert(original_order, get_node_text(st.node, 0) or '')
+  end
 
-Generated by panvimdoc <https://github.com/kdheepak/panvimdoc>
+  -- sort in-place
+  table.sort(statements, compare_fn)
 
-vim:tw=78:ts=8:noet:ft=help:norl:
+  -- detect order change
+  local order_changed = false
+  for i, st in ipairs(statements) do
+    if (get_node_text(st.node, 0) or '') ~= original_order[i] then
+      order_changed = true
+      break
+    end
+  end
+
+  if not order_changed then
+    return false
+  end
+
+  -- Build new lines for the whole block.
+  local lines = {}
+  local prev_visibility = nil
+  local prev_type_local = state.prev_type -- preserve for const->property rule
+
+  for _, st in ipairs(statements) do
+    -- newline between const and properties if configured
+    if state.config.add_newline_between_const_and_properties then
+      local current_type = st.node:type()
+      if prev_type_local == 'const_declaration' and current_type == 'property_declaration' then
+        if #lines == 0 or (#lines > 0 and lines[#lines] ~= '') then
+          table.insert(lines, '')
+        end
+      end
+      prev_type_local = current_type
+    end
+
+    -- attach comment lines (if any)
+    if st.comment and st.comment_lines then
+      -- append comment lines as-is
+      vim.list_extend(lines, st.comment_lines)
+    end
+
+    -- visibility spacing: insert one blank line when visibility changes
+    if is_property and state.config.add_visibility_spacing then
+      local current_visibility =
+          utils.get_visibility_string(st.node, state.config.default_visibility)
+      if prev_visibility and current_visibility ~= prev_visibility then
+        if #lines > 0 and lines[#lines] ~= '' then
+          table.insert(lines, '')
+        end
+      end
+      prev_visibility = current_visibility
+    end
+
+    -- append node lines
+    if st.node_lines then
+      vim.list_extend(lines, st.node_lines)
+    end
+  end
+
+  -- Replace original range with new block lines
+  local start_idx0 = range.min - 1
+  local end_idx0 = range
+  .max                       -- end is 1-based exclusive in get_lines but here buf_set_lines uses end index (0-based exclusive)
+  pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, end_idx0, false, lines)
+
+  -- After writing, compute end index (0-based) where the block ends now
+  local inserted_end0 = start_idx0 + #lines
+
+  -- Ensure single blank line BEFORE the block (if previous line exists and is not empty)
+  if start_idx0 - 1 >= 0 then
+    local prev_line = vim.api.nvim_buf_get_lines(state.bufnr, start_idx0 - 1, start_idx0, false)[1]
+    if prev_line and not utils.is_empty_line(prev_line) then
+      -- insert an empty line at start_idx0
+      pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, start_idx0, false, { '' })
+      -- adjust inserted_end0 because we inserted a line before the block
+      inserted_end0 = inserted_end0 + 1
+    end
+  end
+
+  -- Ensure single blank line AFTER the block (check the line at inserted_end0)
+  local after_line =
+      vim.api.nvim_buf_get_lines(state.bufnr, inserted_end0, inserted_end0 + 1, false)
+  if #after_line == 0 or not utils.is_empty_line(after_line[1]) then
+    pcall(vim.api.nvim_buf_set_lines, state.bufnr, inserted_end0, inserted_end0, false, { '' })
+    -- no need to adjust further
+  end
+
+  -- persist prev_type back to state so next calls know previous element kind
+  state.prev_type = prev_type_local
+
+  return true
+end
+
+local function sort_constants_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_constants and #consts > 0 then
+    sort_and_update(state, consts, function(a, b)
+      return utils.compare_nodes(a, b, true, state.config.default_visibility)
+    end, false)
+  end
+end
+
+local function sort_properties_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_properties and #props > 0 then
+    local changed = sort_and_update(state, props, function(a, b)
+      return utils.compare_nodes(a, b, true, state.config.default_visibility)
+    end, true)
+
+    -- if no change, still ensure spacing around the properties block (before/after)
+    if not changed and #props > 0 then
+      local first_s, _, last_e, _ = props[1].node:range()
+      local start_idx0 = first_s
+      local end_idx0 = last_e + 1
+
+      if start_idx0 - 1 >= 0 then
+        local prev_line =
+            vim.api.nvim_buf_get_lines(state.bufnr, start_idx0 - 1, start_idx0, false)[1]
+        if prev_line and not utils.is_empty_line(prev_line) then
+          pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, start_idx0, false, { '' })
+          end_idx0 = end_idx0 + 1
+        end
+      end
+
+      local after_line = vim.api.nvim_buf_get_lines(state.bufnr, end_idx0, end_idx0 + 1, false)
+      if #after_line == 0 or not utils.is_empty_line(after_line[1]) then
+        pcall(vim.api.nvim_buf_set_lines, state.bufnr, end_idx0, end_idx0, false, { '' })
+      end
+    end
+  end
+end
+
+local function sort_traits_in_range(state, start_row, end_row)
+  local traits, consts, props, _ = parser.extract_range(state, start_row, end_row)
+  if state.config.sort_traits and #traits > 0 then
+    sort_and_update(state, traits, function(a, b)
+      return utils.compare_nodes(a, b, false, state.config.default_visibility)
+    end, false)
+  end
+end
+
+--- Sort namespace use statements + internal spacing (before/after block)
+function M.sort_namespace_uses_impl(state)
+  if not state.config.sort_namespace_uses then
+    return
+  end
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local ok, query = pcall(parser.parse_query, state.lang, '(namespace_use_declaration) @use')
+  if not ok or not query then
+    return
+  end
+
+  local uses = {}
+  for id, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    if query.captures[id] == 'use' then
+      local s, _, e, _ = node:range()
+      local node_lines = vim.api.nvim_buf_get_lines(state.bufnr, s, e + 1, false)
+      table.insert(uses, { node = node, node_lines = node_lines })
+    end
+  end
+
+  if #uses == 0 then
+    return
+  end
+
+  -- Sort and update, then add spacing around the whole block
+  local changed = sort_and_update(state, uses, function(a, b)
+    return utils.compare_nodes(a, b, false, state.config.default_visibility)
+  end, false)
+
+  -- If no change, still ensure spacing around the block (user expects spacing even if order unchanged)
+  if not changed then
+    -- compute block bounds using first and last use nodes (original ranges)
+    local first_s, _, last_e, _ = uses[1].node:range()
+    local start_idx0 = first_s
+    local end_idx0 = last_e + 1
+
+    -- before first use (line index start_idx0 - 1)
+    if start_idx0 - 1 >= 0 then
+      local prev_line =
+          vim.api.nvim_buf_get_lines(state.bufnr, start_idx0 - 1, start_idx0, false)[1]
+      if prev_line and not utils.is_empty_line(prev_line) then
+        pcall(vim.api.nvim_buf_set_lines, state.bufnr, start_idx0, start_idx0, false, { '' })
+        end_idx0 = end_idx0 + 1
+      end
+    end
+
+    -- after last use
+    local after_line = vim.api.nvim_buf_get_lines(state.bufnr, end_idx0, end_idx0 + 1, false)
+    if #after_line == 0 or not utils.is_empty_line(after_line[1]) then
+      pcall(vim.api.nvim_buf_set_lines, state.bufnr, end_idx0, end_idx0, false, { '' })
+    end
+  end
+end
+
+--- Remove unused namespace uses (walk backwards)
+function M.remove_unused_namespace_uses_impl(state)
+  if not state.config.remove_unused_imports then
+    return
+  end
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local ok, query = pcall(parser.parse_query, state.lang, '(namespace_use_declaration) @use')
+  if not ok or not query then
+    return
+  end
+
+  local uses = {}
+  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    table.insert(uses, node)
+  end
+
+  for i = #uses, 1, -1 do
+    if utils.is_unused(uses[i]:start()) then
+      local s, _, e, _ = uses[i]:range()
+      pcall(vim.api.nvim_buf_set_lines, state.bufnr, s, e + 1, false, {})
+    end
+  end
+end
+
+--- Process elements per class or globally
+function M.process_and_sort_elements(state, start_row, end_row)
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local ok, class_query = pcall(parser.parse_query, state.lang, '(class_declaration) @class')
+  if not ok or not class_query then
+    sort_constants_in_range(state, start_row, end_row)
+    sort_properties_in_range(state, start_row, end_row)
+    sort_traits_in_range(state, start_row, end_row)
+    return
+  end
+
+  local classes = {}
+  for _, node in class_query:iter_captures(state.root, state.bufnr, start_row, end_row) do
+    table.insert(classes, node)
+  end
+
+  if #classes == 0 then
+    sort_constants_in_range(state, start_row, end_row)
+    sort_properties_in_range(state, start_row, end_row)
+    sort_traits_in_range(state, start_row, end_row)
+    return
+  end
+
+  for _, class_node in ipairs(classes) do
+    local s, _, e, _ = class_node:range()
+    sort_constants_in_range(state, s, e)
+    sort_properties_in_range(state, s, e)
+    sort_traits_in_range(state, s, e)
+  end
+end
+
+--- High-level pipeline
+function M.sort_all_impl(state)
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  M.sort_namespace_uses_impl(state)
+  M.remove_unused_namespace_uses_impl(state)
+  M.process_and_sort_elements(state, 0, -1)
+  spacing.add_spacing_after_trait_uses(state) -- keep special trait-use spacing if desired
+end
+
+return M
+
+-- End of lua/php-elements-sorter/sorters.lua
+
+-- File: lua/php-elements-sorter/init.lua
+-- lua/php-elements-sorter/init.lua
+-- Plugin entry point with per-buffer state management
+
+local M = {}
+local log = require('php-elements-sorter.log')
+
+-- Default configuration (shared across all buffers)
+M.config = {
+  add_visibility_spacing = true,
+  sort_properties = true,
+  sort_traits = true,
+  sort_namespace_uses = true,
+  sort_constants = true,
+  default_visibility = 'public',
+  remove_unused_imports = true,
+  add_newline_between_const_and_properties = true,
+  add_newline_after_namespace_uses = true,
+  add_newline_after_trait_uses = true,
+  debug = false,
+}
+
+-- Per-buffer state storage with weak keys for garbage collection
+local buffer_states = setmetatable({}, { __mode = 'k' })
+
+-- Lazy-load modules
+local sorters = nil
+local actions = nil
+
+local function get_sorters()
+  if not sorters then
+    sorters = require('php-elements-sorter.sorters')
+  end
+  return sorters
+end
+
+local function get_actions()
+  if not actions then
+    actions = require('php-elements-sorter.actions')
+  end
+  return actions
+end
+
+--- Get or create state for a specific buffer
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return table state Buffer-specific state
+local function get_state(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  -- Return existing state if available
+  if buffer_states[bufnr] then
+    return buffer_states[bufnr]
+  end
+
+  -- Create new state for this buffer
+  local state = {
+    bufnr = bufnr,
+    root = nil,
+    lang = nil,
+    prev_type = nil,
+    config = vim.deepcopy(M.config), -- Each buffer gets its own config copy
+    created_at = os.time(),
+  }
+
+  buffer_states[bufnr] = state
+
+  log.debug(string.format('Created state for buffer %d', bufnr))
+
+  -- Auto-cleanup: Remove state when buffer is deleted
+  vim.api.nvim_create_autocmd('BufDelete', {
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      buffer_states[bufnr] = nil
+      log.debug(string.format('Cleaned up state for buffer %d', bufnr))
+    end,
+    desc = 'Cleanup php-elements-sorter state',
+  })
+
+  return state
+end
+
+--- Invalidate parser state for a buffer (call after buffer changes)
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+local function invalidate_parser_state(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local state = buffer_states[bufnr]
+
+  if state then
+    state.root = nil
+    state.lang = nil
+    log.debug(string.format('Invalidated parser state for buffer %d', bufnr))
+  end
+end
+
+--- Get diagnostic info about buffer states (for debugging)
+---@return table info Diagnostic information
+function M.get_state_info()
+  local info = {
+    active_buffers = 0,
+    states = {},
+  }
+
+  for bufnr, state in pairs(buffer_states) do
+    info.active_buffers = info.active_buffers + 1
+    table.insert(info.states, {
+      bufnr = bufnr,
+      valid = vim.api.nvim_buf_is_valid(bufnr),
+      loaded = vim.api.nvim_buf_is_loaded(bufnr),
+      has_parser = state.root ~= nil,
+      lang = state.lang,
+      age_seconds = os.time() - (state.created_at or 0),
+    })
+  end
+
+  return info
+end
+
+--- Force cleanup of invalid buffer states
+function M.cleanup_invalid_states()
+  local cleaned = 0
+
+  for bufnr, _ in pairs(buffer_states) do
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      buffer_states[bufnr] = nil
+      cleaned = cleaned + 1
+    end
+  end
+
+  if cleaned > 0 then
+    log.debug(string.format('Cleaned up %d invalid buffer states', cleaned))
+  end
+
+  return cleaned
+end
+
+--- Public wrappers that use per-buffer state
+function M.sort_all_impl()
+  local state = get_state()
+  get_sorters().sort_all_impl(state)
+end
+
+function M.sort_namespace_uses()
+  local state = get_state()
+  get_sorters().sort_namespace_uses_impl(state)
+end
+
+function M.remove_unused_uses()
+  local state = get_state()
+  get_sorters().remove_unused_namespace_uses_impl(state)
+end
+
+function M.sort_elements()
+  local state = get_state()
+  get_sorters().process_and_sort_elements(state, 0, -1)
+end
+
+function M.sort_all()
+  M.sort_all_impl()
+end
+
+function M.get_code_actions()
+  local state = get_state()
+  return get_actions().get_code_actions(state)
+end
+
+function M.code_action(ctx, opts)
+  local state = get_state()
+  get_actions().code_action(state, ctx, opts)
+end
+
+--- Override buffer-local config for specific buffer
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@param overrides table Config overrides
+function M.set_buffer_config(bufnr, overrides)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local state = get_state(bufnr)
+  state.config = vim.tbl_deep_extend('force', state.config, overrides)
+  log.debug(string.format('Updated config for buffer %d', bufnr))
+end
+
+--- Get config for specific buffer
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return table config
+function M.get_buffer_config(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local state = get_state(bufnr)
+  return vim.deepcopy(state.config)
+end
+
+--- Setup code_action override for PHP files only
+local function setup_code_action_override()
+  -- Store original code_action
+  local orig_code_action = vim.lsp.buf.code_action
+
+  -- Create wrapper that checks filetype
+  vim.lsp.buf.code_action = function(ctx, opts)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local ft = vim.bo[bufnr].filetype
+
+    if ft == 'php' then
+      log.debug('Intercepting code_action for PHP buffer ' .. bufnr)
+      M.code_action(ctx, opts)
+    else
+      -- Delegate to original for non-PHP files
+      orig_code_action(ctx, opts)
+    end
+  end
+
+  log.debug('code_action override installed')
+end
+
+--- Register LSP command handlers
+local function register_lsp_commands()
+  vim.lsp.commands = vim.lsp.commands or {}
+
+  local commands = {
+    'sort_namespace_uses',
+    'remove_unused_uses',
+    'sort_elements',
+    'sort_all',
+  }
+
+  for _, cmd in ipairs(commands) do
+    local full_cmd = 'php_elements_sorter.' .. cmd
+    vim.lsp.commands[full_cmd] = function()
+      log.debug('LSP command invoked: ' .. full_cmd)
+      M[cmd]()
+    end
+  end
+
+  log.debug('Registered ' .. #commands .. ' LSP commands')
+end
+
+--- Create user commands
+local function create_user_commands()
+  local commands = {
+    {
+      name = 'SortPhpElements',
+      func = function()
+        M.sort_all()
+      end,
+      desc = 'Sort all PHP elements (uses, traits, properties, constants)',
+    },
+    {
+      name = 'SortPhpNamespaceUses',
+      func = function()
+        M.sort_namespace_uses()
+      end,
+      desc = 'Sort namespace use statements',
+    },
+    {
+      name = 'RemoveUnusedUses',
+      func = function()
+        M.remove_unused_uses()
+      end,
+      desc = 'Remove unused namespace use statements',
+    },
+    {
+      name = 'SortPhpClassElements',
+      func = function()
+        M.sort_elements()
+      end,
+      desc = 'Sort class properties, constants, and traits',
+    },
+    {
+      name = 'PhpSorterInfo',
+      func = function()
+        local info = M.get_state_info()
+        print(vim.inspect(info))
+      end,
+      desc = 'Show php-elements-sorter diagnostic info',
+    },
+    {
+      name = 'PhpSorterCleanup',
+      func = function()
+        local cleaned = M.cleanup_invalid_states()
+        vim.notify(
+          string.format('[php-elements-sorter] Cleaned %d invalid states', cleaned),
+          vim.log.levels.INFO
+        )
+      end,
+      desc = 'Cleanup invalid buffer states',
+    },
+  }
+
+  for _, cmd in ipairs(commands) do
+    pcall(vim.api.nvim_create_user_command, cmd.name, cmd.func, {
+      desc = cmd.desc,
+    })
+  end
+
+  log.debug('Created ' .. #commands .. ' user commands')
+end
+
+--- Setup autocommands for PHP files
+local function setup_autocommands()
+  local group = vim.api.nvim_create_augroup('PhpElementsSorter', { clear = true })
+
+  -- Optional: auto-sort on save (disabled by default)
+  if M.config.auto_sort_on_save then
+    vim.api.nvim_create_autocmd('BufWritePre', {
+      group = group,
+      pattern = '*.php',
+      callback = function()
+        log.debug('Auto-sorting on save')
+        M.sort_all()
+      end,
+      desc = 'Auto-sort PHP elements on save',
+    })
+  end
+
+  -- Invalidate parser state on buffer changes
+  vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+    group = group,
+    pattern = '*.php',
+    callback = function(args)
+      -- Debounce: only invalidate after 500ms of inactivity
+      local bufnr = args.buf
+      local timer = vim.defer_fn(function()
+        invalidate_parser_state(bufnr)
+      end, 500)
+
+      -- Cancel previous timer if exists
+      if buffer_states[bufnr] and buffer_states[bufnr]._invalidate_timer then
+        buffer_states[bufnr]._invalidate_timer:stop()
+      end
+
+      if buffer_states[bufnr] then
+        buffer_states[bufnr]._invalidate_timer = timer
+      end
+    end,
+    desc = 'Invalidate parser state on buffer changes',
+  })
+
+  -- Periodic cleanup of invalid states (every 5 minutes)
+  vim.fn.timer_start(300000, function()
+    M.cleanup_invalid_states()
+  end, { ['repeat'] = -1 })
+
+  log.debug('Autocommands configured')
+end
+
+--- Setup plugin, register commands and LSP command shims
+---@param user_config table?
+function M.setup(user_config)
+  -- Merge user config
+  M.config = vim.tbl_deep_extend('force', M.config, user_config or {})
+
+  log.init(M.config)
+
+  log.debug('Setting up php-elements-sorter plugin')
+
+  -- Register LSP commands
+  register_lsp_commands()
+
+  -- Override code_action for PHP files
+  setup_code_action_override()
+
+  -- Create user commands
+  create_user_commands()
+
+  -- Setup autocommands
+  setup_autocommands()
+
+  log.debug('Plugin setup complete')
+
+  -- Return module for convenience
+  return M
+end
+
+return M
+
+-- End of lua/php-elements-sorter/init.lua
+
+-- File: lua/php-elements-sorter/actions.lua
+-- lua/php-elements-sorter/actions.lua
+-- Collect LSP code actions, merge with plugin custom ones, show UI and execute selection
+
+local M = {}
+local log = require('php-elements-sorter.log')
+local parser = require('php-elements-sorter.parser')
+local ui = require('php-elements-sorter.ui')
+
+--- Produce plugin-specific actions
+local function plugin_actions()
+  return {
+    {
+      title = 'Sort namespace uses',
+      kind = 'source.organizeImports',
+      command = {
+        title = 'Sort namespace uses',
+        command = 'php_elements_sorter.sort_namespace_uses',
+      },
+      is_custom = true,
+    },
+    {
+      title = 'Remove unused use statements',
+      kind = 'source.organizeImports',
+      command = {
+        title = 'Remove unused use statements',
+        command = 'php_elements_sorter.remove_unused_uses',
+      },
+      is_custom = true,
+    },
+    {
+      title = 'Sort properties/constants/traits',
+      kind = 'source.organizeImports',
+      command = { title = 'Sort elements', command = 'php_elements_sorter.sort_elements' },
+      is_custom = true,
+    },
+    {
+      title = 'Sort all PHP elements',
+      kind = 'source.organizeImports',
+      command = { title = 'Sort all', command = 'php_elements_sorter.sort_all' },
+      is_custom = true,
+    },
+  }
+end
+
+--- Build safe diagnostics from Neovim diagnostics
+local function build_safe_diagnostics(diagnostics)
+  local safe = {}
+  local skipped = 0
+
+  for _, nvim_diag in ipairs(diagnostics) do
+    local lsp_data = nvim_diag.user_data and nvim_diag.user_data.lsp
+    if lsp_data and lsp_data.range then
+      local start = lsp_data.range.start
+      local end_pos = lsp_data.range['end']
+
+      if
+          start
+          and end_pos
+          and start.line ~= nil
+          and start.character ~= nil
+          and end_pos.line ~= nil
+          and end_pos.character ~= nil
+      then
+        table.insert(safe, {
+          range = {
+            start = { line = start.line, character = start.character },
+            ['end'] = { line = end_pos.line, character = end_pos.character },
+          },
+          message = lsp_data.message or nvim_diag.message or '',
+          severity = lsp_data.severity or nvim_diag.severity,
+          code = lsp_data.code or nvim_diag.code,
+          source = lsp_data.source or nvim_diag.source,
+        })
+      else
+        skipped = skipped + 1
+      end
+    else
+      skipped = skipped + 1
+    end
+  end
+
+  if skipped > 0 then
+    log.debug(string.format('Skipped %d diagnostics with invalid LSP range data', skipped))
+  end
+
+  return safe
+end
+
+--- Show actions using the available UI method
+local function show_actions(actions, execute_fn)
+  local used = ui.show_code_actions_with_telescope(actions, execute_fn)
+  if not used then
+    ui.show_code_actions_with_ui_select(actions, execute_fn)
+  end
+end
+
+--- Execute action (handles LSP action objects and plugin custom commands)
+local function execute_action(action)
+  log.debug(
+    string.format(
+      'Executing action: "%s" (is_custom: %s, is_lsp: %s)',
+      action.title or 'unknown',
+      tostring(action.is_custom or false),
+      tostring(action.is_lsp or false)
+    )
+  )
+
+  if action.edit then
+    local ok, encoding = pcall(function()
+      local client = vim.lsp.get_client_by_id(action.client_id)
+      return client and client.offset_encoding or 'utf-16'
+    end)
+    encoding = encoding or 'utf-16'
+    log.debug('Applying workspace edit with encoding: ' .. encoding)
+    vim.lsp.util.apply_workspace_edit(action.edit, encoding)
+  end
+
+  if action.command and not action.is_custom then
+    log.debug('Executing LSP command: ' .. vim.inspect(action.command))
+    pcall(function()
+      if type(action.command) == 'string' then
+        vim.lsp.buf.execute_command({ command = action.command })
+      else
+        vim.lsp.buf.execute_command(action.command)
+      end
+    end)
+  end
+
+  if action.is_custom and action.command and action.command.command then
+    local cmd_str = action.command.command
+    log.debug('Executing custom command: ' .. cmd_str)
+
+    local cmd_fn = vim.lsp.commands and vim.lsp.commands[cmd_str]
+    if type(cmd_fn) == 'function' then
+      pcall(cmd_fn)
+      return
+    end
+
+    local ok, plugin = pcall(require, 'php-elements-sorter')
+    if ok and plugin then
+      local func_name = cmd_str:gsub('php_elements_sorter%.', '')
+      if plugin[func_name] and type(plugin[func_name]) == 'function' then
+        pcall(plugin[func_name])
+      else
+        log.debug('Custom function not found: ' .. func_name, vim.log.levels.WARN)
+      end
+    else
+      log.debug('Failed to load php-elements-sorter plugin', vim.log.levels.WARN)
+    end
+  end
+end
+
+--- Build LSP request params
+local function build_request_params(bufnr, encoding, ctx, opts)
+  local current_win = vim.api.nvim_get_current_win()
+  local ok_params, params = pcall(vim.lsp.util.make_range_params, current_win, encoding)
+
+  if not ok_params or type(params) ~= 'table' then
+    return nil, 'Failed to build LSP params: ' .. (ok_params and 'result not a table' or params)
+  end
+
+  local safe_context = {}
+
+  if opts and opts.only then
+    safe_context.only = opts.only
+  end
+
+  if ctx.diagnostics and vim.tbl_count(ctx.diagnostics) > 0 then
+    local safe_diagnostics = build_safe_diagnostics(ctx.diagnostics)
+    if #safe_diagnostics > 0 then
+      safe_context.diagnostics = safe_diagnostics
+    end
+  end
+
+  params.context = safe_context
+  return params, nil
+end
+
+--- Gather LSP code actions and merge with plugin actions, then show UI
+function M.code_action(state, ctx, opts)
+  ctx = ctx or {}
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  log.debug('Starting code_action for buffer ' .. bufnr)
+
+  local first_client = vim.lsp.get_clients({ bufnr = bufnr })[1]
+  local encoding = first_client and first_client.offset_encoding or 'utf-16'
+
+  if not ctx.range then
+    local ok_make, range_params = pcall(vim.lsp.util.make_range_params, encoding)
+    if ok_make and range_params and range_params.range then
+      ctx.range = range_params.range
+    else
+      ctx.range = { start = { line = 0, character = 0 }, ['end'] = { line = 0, character = 0 } }
+    end
+  end
+  ctx.diagnostics = ctx.diagnostics or vim.diagnostic.get(bufnr)
+
+  -- Get plugin actions (always available)
+  local actions = vim.deepcopy(plugin_actions())
+  log.debug('Loaded ' .. #actions .. ' plugin actions')
+
+  -- Early return if no class found (optional: consider removing this restriction)
+  if not parser.has_class(state) then
+    log.debug('No class found in buffer, showing plugin actions only')
+    show_actions(actions, execute_action)
+    return
+  end
+
+  -- Check for LSP clients that support code actions
+  local clients = vim.lsp.get_clients({
+    bufnr = bufnr,
+    filter = function(client)
+      return client.supports_method('textDocument/codeAction')
+    end,
+  })
+
+  log.debug('Found ' .. #clients .. ' LSP clients supporting codeAction')
+
+  -- If no LSP clients, show plugin actions only
+  if #clients == 0 then
+    log.debug('No LSP clients available, showing plugin actions only')
+    show_actions(actions, execute_action)
+    return
+  end
+
+  -- Build LSP request params
+  local params, err = build_request_params(bufnr, encoding, ctx, opts)
+  if not params then
+    log.debug(
+      'Failed to build LSP params: ' .. err .. ', showing plugin actions only',
+      vim.log.levels.WARN
+    )
+    show_actions(actions, execute_action)
+    return
+  end
+
+  log.debug('Requesting code actions from LSP clients')
+
+  -- Request code actions from all LSP clients
+  vim.lsp.buf_request_all(bufnr, 'textDocument/codeAction', params, function(results)
+    local lsp_action_count = 0
+
+    for client_id, res in pairs(results) do
+      if res and res.result then
+        local client = vim.lsp.get_client_by_id(client_id)
+        local client_name = client and client.name or 'unknown'
+        local count = #res.result
+
+        log.debug(string.format('LSP client "%s" returned %d actions', client_name, count))
+        lsp_action_count = lsp_action_count + count
+
+        for _, act in ipairs(res.result) do
+          act.client_id = client_id
+          act.client_name = client_name
+          act.is_lsp = true
+          table.insert(actions, act)
+        end
+      elseif res and res.err then
+        local client = vim.lsp.get_client_by_id(client_id)
+        local client_name = client and client.name or 'unknown'
+        log.debug(
+          string.format('LSP client "%s" returned error: %s', client_name, vim.inspect(res.err)),
+          vim.log.levels.WARN
+        )
+      end
+    end
+
+    log.debug(
+      string.format(
+        'Total actions available: %d (plugin: %d, LSP: %d)',
+        #actions,
+        #plugin_actions(),
+        lsp_action_count
+      )
+    )
+
+    -- Always show actions (plugin actions are always available)
+    show_actions(actions, execute_action)
+  end)
+end
+
+--- Get plugin-specific code actions
+function M.get_code_actions(state)
+  return plugin_actions()
+end
+
+return M
+
+-- End of lua/php-elements-sorter/actions.lua
+
+-- File: lua/php-elements-sorter/parser.lua
+-- lua/php-elements-sorter/parser.lua
+-- Tree-sitter parser helpers and queries
+
+local M = {}
+local ts = vim.treesitter
+local parsers = require('nvim-treesitter.parsers')
+
+--- Parse query with compatibility for different TS APIs
+function M.parse_query(lang, query)
+  if vim.treesitter and vim.treesitter.query then
+    if vim.treesitter.query.parse then
+      return vim.treesitter.query.parse(lang, query)
+    elseif vim.treesitter.query.parse_query then
+      return vim.treesitter.query.parse_query(lang, query)
+    end
+  end
+  if ts and ts.query then
+    if ts.query.parse then
+      return ts.query.parse(lang, query)
+    end
+  end
+  error('No Tree-sitter query parsing function found')
+end
+
+--- Get parser for buffer & lang with compatibility
+function M.get_parser(bufnr, lang)
+  if vim.treesitter.get_parser then
+    return vim.treesitter.get_parser(bufnr, lang)
+  end
+  if parsers.get_parser then
+    return parsers.get_parser(bufnr, lang)
+  end
+  error('No Tree-sitter parser getter found')
+end
+
+--- Setup tree-sitter parser for current buffer and write into state
+function M.set_treesitter_parser(state)
+  local bufnr = vim.api.nvim_get_current_buf()
+  state.bufnr = bufnr
+
+  local ok, parser = pcall(M.get_parser, bufnr, 'php')
+  if not ok or not parser then
+    return false
+  end
+
+  local trees = parser:parse()
+  if not trees or #trees == 0 then
+    return false
+  end
+
+  local tree = trees[1]
+  if not tree then
+    return false
+  end
+
+  state.root = tree:root()
+  state.lang = parser:lang()
+  return state.lang == 'php' and state.root ~= nil
+end
+
+--- Check whether buffer contains class declaration
+function M.has_class(state)
+  if not M.set_treesitter_parser(state) then
+    return false
+  end
+  if state.lang ~= 'php' or not state.root then
+    return false
+  end
+
+  local ok, q = pcall(M.parse_query, state.lang, '(class_declaration) @class')
+  if not ok or not q then
+    return false
+  end
+
+  for _, _ in q:iter_captures(state.root, state.bufnr, 0, -1) do
+    return true
+  end
+  return false
+end
+
+--- Extract trait/const/property declarations within a given row range
+-- returns traits, consts, properties, and rows table with _start/_end (0-based)
+function M.extract_range(state, start_row, end_row)
+  if not M.set_treesitter_parser(state) then
+    return {}, {}, {}, { _start = end_row, _end = start_row }
+  end
+
+  local query_string = [[
+    (use_declaration) @trait
+    (const_declaration) @const
+    (property_declaration) @property
+  ]]
+
+  local ok, parsed_query = pcall(M.parse_query, state.lang, query_string)
+  if not ok or not parsed_query then
+    return {}, {}, {}, { _start = end_row, _end = start_row }
+  end
+
+  local captures = { trait = {}, const = {}, property = {} }
+  local rows = { _start = end_row, _end = start_row }
+
+  for id, node in parsed_query:iter_captures(state.root, state.bufnr, start_row, end_row) do
+    local capture_name = parsed_query.captures[id]
+    if not captures[capture_name] then
+      goto continue
+    end
+
+    local real_node_start_row = node:start()
+    local end_row_arg = end_row == -1 and real_node_start_row + 1 or end_row
+
+    if real_node_start_row < rows._start then
+      rows._start = real_node_start_row
+    end
+    if real_node_start_row > rows._end then
+      rows._end = real_node_start_row
+    end
+
+    if real_node_start_row >= start_row and real_node_start_row <= end_row_arg then
+      local prev_sibling = node:prev_sibling()
+      local comment = prev_sibling and prev_sibling:type() == 'comment' and prev_sibling or nil
+
+      local node_start_row, _, node_end_row, _ = node:range()
+      local node_lines =
+          vim.api.nvim_buf_get_lines(state.bufnr, node_start_row, node_end_row + 1, false)
+
+      local comment_lines = nil
+      if comment then
+        local c_start_row, _, c_end_row, _ = comment:range()
+        comment_lines = vim.api.nvim_buf_get_lines(state.bufnr, c_start_row, c_end_row + 1, false)
+      end
+
+      local candidate = {
+        node = node,
+        comment = comment,
+        node_lines = node_lines,
+        comment_lines = comment_lines,
+      }
+
+      table.insert(captures[capture_name], candidate)
+    end
+
+    ::continue::
+  end
+
+  return captures.trait, captures.const, captures.property, rows
+end
+
+return M
+
+-- End of lua/php-elements-sorter/parser.lua
+
+-- File: lua/php-elements-sorter/spacing.lua
+-- lua/php-elements-sorter/spacing.lua
+
+local M = {}
+
+local parser = require('php-elements-sorter.parser')
+local utils = require('php-elements-sorter.utils')
+
+--- Ensure exactly one empty line before the first use and after the last use
+function M.add_spacing_around_namespace_uses(state)
+  if not state.config.sort_namespace_uses then
+    return
+  end
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local query = parser.parse_query(state.lang, '(namespace_use_declaration) @use')
+  local first_use, last_use = nil, nil
+
+  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    local s, _, e, _ = node:range()
+    first_use = first_use or s
+    last_use = e
+  end
+
+  if not first_use then
+    return
+  end
+
+  -- Before the first use
+  if first_use > 0 then
+    local prev_line = vim.api.nvim_buf_get_lines(state.bufnr, first_use - 1, first_use, false)[1]
+    if prev_line and not utils.is_empty_line(prev_line) then
+      vim.api.nvim_buf_set_lines(state.bufnr, first_use, first_use, false, { '' })
+    end
+  end
+
+  -- After the last use
+  local next_line = last_use + 1
+  local lines = vim.api.nvim_buf_get_lines(state.bufnr, next_line, next_line + 1, false)
+  if #lines == 0 or not utils.is_empty_line(lines[1]) then
+    vim.api.nvim_buf_set_lines(state.bufnr, next_line, next_line, false, { '' })
+  end
+end
+
+--- Ensure exactly one empty line before first and after last member in a class
+function M.add_spacing_around_class_members(state)
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local query =
+      parser.parse_query(state.lang, '(class_declaration body: (declaration_list (_) @member))')
+  local members = {}
+
+  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    table.insert(members, node)
+  end
+
+  if #members == 0 then
+    return
+  end
+
+  local first_member = members[1]
+  local last_member = members[#members]
+
+  local s, _, _, _ = first_member:range()
+  if s > 0 then
+    local prev_line = vim.api.nvim_buf_get_lines(state.bufnr, s - 1, s, false)[1]
+    if prev_line and not utils.is_empty_line(prev_line) then
+      vim.api.nvim_buf_set_lines(state.bufnr, s, s, false, { '' })
+    end
+  end
+
+  local _, _, e, _ = last_member:range()
+  local next_line = e + 1
+  local lines = vim.api.nvim_buf_get_lines(state.bufnr, next_line, next_line + 1, false)
+  if #lines == 0 or not utils.is_empty_line(lines[1]) then
+    vim.api.nvim_buf_set_lines(state.bufnr, next_line, next_line, false, { '' })
+  end
+end
+
+--- Existing: spacing after uses
+function M.add_spacing_after_namespace_uses(state)
+  if not state.config.add_newline_after_namespace_uses then
+    return
+  end
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local query = parser.parse_query(state.lang, '(namespace_use_declaration) @use')
+  local last_use_line = nil
+
+  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    local _, _, end_row, _ = node:range()
+    last_use_line = end_row
+  end
+
+  if last_use_line then
+    local next_line = last_use_line + 1
+    local lines = vim.api.nvim_buf_get_lines(state.bufnr, next_line, next_line + 1, false)
+    if #lines == 0 or not utils.is_empty_line(lines[1]) then
+      vim.api.nvim_buf_set_lines(state.bufnr, next_line, next_line, false, { '' })
+    end
+  end
+end
+
+--- Existing: spacing after trait uses
+function M.add_spacing_after_trait_uses(state)
+  if not state.config.add_newline_after_trait_uses then
+    return
+  end
+  if not parser.set_treesitter_parser(state) then
+    return
+  end
+
+  local query = parser.parse_query(state.lang, '(trait_use_clause) @trait')
+  for _, node in query:iter_captures(state.root, state.bufnr, 0, -1) do
+    local _, _, end_row, _ = node:range()
+    local next_line = end_row + 1
+    local lines = vim.api.nvim_buf_get_lines(state.bufnr, next_line, next_line + 1, false)
+    if #lines == 0 or not utils.is_empty_line(lines[1]) then
+      vim.api.nvim_buf_set_lines(state.bufnr, next_line, next_line, false, { '' })
+    end
+  end
+end
+
+return M
+
+-- End of lua/php-elements-sorter/spacing.lua
+
+-- File: lua/php-elements-sorter/log.lua
+-- lua/php-elements-sorter/log.lua
+-- Logging utilities for the plugin
+
+local M = {}
+
+-- Internal reference to config (set during plugin setup)
+local config = nil
+
+--- Initialize logger with plugin config
+---@param plugin_config table Plugin configuration
+function M.init(plugin_config)
+  config = plugin_config
+end
+
+--- Debug logging helper
+---@param msg string Message to log
+---@param level number? Log level (default: vim.log.levels.DEBUG)
+function M.debug(msg, level)
+  if config and config.debug then
+    level = level or vim.log.levels.DEBUG
+    vim.notify('[php-elements-sorter] ' .. msg, level)
+  end
+end
+
+--- Info logging
+---@param msg string Message to log
+function M.info(msg)
+  M.debug(msg, vim.log.levels.INFO)
+end
+
+--- Warning logging
+---@param msg string Message to log
+function M.warn(msg)
+  M.debug(msg, vim.log.levels.WARN)
+end
+
+--- Error logging
+---@param msg string Message to log
+function M.error(msg)
+  M.debug(msg, vim.log.levels.ERROR)
+end
+
+--- Log with formatted string (sprintf-like)
+---@param format string Format string
+---@param ... any Arguments
+function M.debugf(format, ...)
+  if config and config.debug then
+    M.debug(string.format(format, ...))
+  end
+end
+
+--- Log table contents (for debugging)
+---@param tbl table Table to inspect
+---@param label string? Optional label
+function M.dump(tbl, label)
+  if config and config.debug then
+    local msg = label and (label .. ': ') or ''
+    msg = msg .. vim.inspect(tbl)
+    M.debug(msg)
+  end
+end
+
+--- Check if debug mode is enabled
+---@return boolean
+function M.is_debug()
+  return config and config.debug or false
+end
+
+--- Check if a value is empty (nil, empty string, empty table)
+---@param value any Value to check
+---@return boolean
+function M.is_empty(value)
+  if value == nil then
+    return true
+  end
+  if type(value) == 'string' and value == '' then
+    return true
+  end
+  if type(value) == 'table' and vim.tbl_isempty(value) then
+    return true
+  end
+  return false
+end
+
+--- Safe table deep copy
+---@param tbl table Table to copy
+---@return table
+function M.deep_copy(tbl)
+  return vim.deepcopy(tbl)
+end
+
+--- Get current buffer info
+---@return number bufnr, string filetype
+function M.get_buffer_info()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local filetype = vim.bo[bufnr].filetype
+  return bufnr, filetype
+end
+
+--- Check if buffer is a PHP file
+---@param bufnr number? Buffer number (default: current buffer)
+---@return boolean
+function M.is_php_buffer(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  return vim.bo[bufnr].filetype == 'php'
+end
+
+--- Get LSP encoding for buffer
+---@param bufnr number Buffer number
+---@return string encoding (e.g., 'utf-16', 'utf-8')
+function M.get_lsp_encoding(bufnr)
+  local clients = vim.lsp.get_clients({ bufnr = bufnr })
+  local first_client = clients[1]
+  return first_client and first_client.offset_encoding or 'utf-16'
+end
+
+--- Create a default LSP range (0,0 to 0,0)
+---@return table range
+function M.default_lsp_range()
+  return {
+    start = { line = 0, character = 0 },
+    ['end'] = { line = 0, character = 0 },
+  }
+end
+
+--- Build LSP range params with error handling
+---@param encoding string LSP encoding
+---@return table|nil range_params, string|nil error
+function M.build_range_params(encoding)
+  local ok, range_params = pcall(vim.lsp.util.make_range_params, encoding)
+  if ok and range_params and range_params.range then
+    return range_params, nil
+  end
+  return nil, 'Failed to build range params'
+end
+
+--- Get LSP clients that support a specific method
+---@param bufnr number Buffer number
+---@param method string LSP method (e.g., 'textDocument/codeAction')
+---@return table clients
+function M.get_lsp_clients_for_method(bufnr, method)
+  return vim.lsp.get_clients({
+    bufnr = bufnr,
+    filter = function(client)
+      return client.supports_method(method)
+    end,
+  })
+end
+
+--- Get client name from client ID
+---@param client_id number LSP client ID
+---@return string name
+function M.get_client_name(client_id)
+  local client = vim.lsp.get_client_by_id(client_id)
+  return client and client.name or 'unknown'
+end
+
+--- Safe pcall wrapper with logging
+---@param state table Plugin state for logging
+---@param fn function Function to call
+---@param error_msg string Error message prefix
+---@return boolean success, any result
+function M.safe_call(state, fn, error_msg)
+  local ok, result = pcall(fn)
+  if not ok then
+    M.debug(state, error_msg .. ': ' .. tostring(result), vim.log.levels.WARN)
+  end
+  return ok, result
+end
+
+--- Validate LSP range structure
+---@param range table LSP range object
+---@return boolean valid
+function M.is_valid_lsp_range(range)
+  if not range or type(range) ~= 'table' then
+    return false
+  end
+
+  local start = range.start
+  local end_pos = range['end']
+
+  if not start or not end_pos then
+    return false
+  end
+
+  return start.line ~= nil
+    and start.character ~= nil
+    and end_pos.line ~= nil
+    and end_pos.character ~= nil
+end
+
+--- Count items in a table (works with both arrays and dictionaries)
+---@param tbl table Table to count
+---@return number count
+function M.count(tbl)
+  if not tbl then
+    return 0
+  end
+  -- Try array length first
+  local len = #tbl
+  if len > 0 then
+    return len
+  end
+  -- Fall back to vim.tbl_count for dictionaries
+  return vim.tbl_count(tbl)
+end
+
+--- Merge tables with preference for non-nil values
+---@param ... table Tables to merge
+---@return table merged
+function M.merge_tables(...)
+  local result = {}
+  for _, tbl in ipairs({ ... }) do
+    if tbl then
+      result = vim.tbl_deep_extend('force', result, tbl)
+    end
+  end
+  return result
+end
+
+--- Format string with parameters (simple sprintf-like)
+---@param format string Format string with %s placeholders
+---@param ... any Values to insert
+---@return string formatted
+function M.format(format, ...)
+  return string.format(format, ...)
+end
+
+--- Notify user with plugin prefix
+---@param msg string Message to show
+---@param level number? Log level (default: INFO)
+function M.notify(msg, level)
+  level = level or vim.log.levels.INFO
+  vim.notify('[php-elements-sorter] ' .. msg, level)
+end
+
+--- Create a debounced function
+---@param fn function Function to debounce
+---@param delay number Delay in milliseconds
+---@return function debounced_fn
+function M.debounce(fn, delay)
+  local timer = nil
+  return function(...)
+    local args = { ... }
+    if timer then
+      timer:stop()
+    end
+    timer = vim.defer_fn(function()
+      fn(unpack(args))
+    end, delay)
+  end
+end
+
+return M
+
+-- End of lua/php-elements-sorter/log.lua
+
+-- File: lua/php-elements-sorter/utils.lua
+-- lua/php-elements-sorter/utils.lua
+-- General utilities: visibility, buffer updates, diagnostics
+
+local M = {}
+local ts = vim.treesitter
+local get_node_text = ts.get_node_text
+local vim_diagnostic = vim.diagnostic
+
+local VISIBILITY_VALUES = { private = 1, protected = 2, public = 3 }
+
+--- Is line empty or whitespace?
+function M.is_empty_line(line)
+  return line:match('^%s*$') ~= nil
+end
+
+--- Get visibility string from node (returns default if none)
+function M.get_visibility_string(node, default_visibility)
+  if not node then
+    return default_visibility or 'public'
+  end
+  for child in node:iter_children() do
+    if child:type() == 'visibility_modifier' then
+      return get_node_text(child, 0) or default_visibility
+    end
+  end
+  return default_visibility or 'public'
+end
+
+--- Compare two statement entries (a,b) with optional visibility ordering
+function M.compare_nodes(a, b, compare_visibility, default_visibility)
+  if compare_visibility then
+    local vis_a = VISIBILITY_VALUES[M.get_visibility_string(a.node, default_visibility)] or 0
+    local vis_b = VISIBILITY_VALUES[M.get_visibility_string(b.node, default_visibility)] or 0
+    if vis_a ~= vis_b then
+      return vis_a < vis_b
+    end
+  end
+  local ta = get_node_text(a.node, 0) or ''
+  local tb = get_node_text(b.node, 0) or ''
+  return ta < tb
+end
+
+--- Update buffer lines in 1-based inclusive range {min, max}
+--- returns true if changed
+function M.update_buffer(range, lines)
+  if not range or not lines then
+    return false
+  end
+  local start_idx = math.max(0, range.min - 1)
+  local end_idx = range.max -- this is already 1-based inclusive, nvim get_lines end is exclusive
+  local original = vim.api.nvim_buf_get_lines(0, start_idx, end_idx, false)
+  if vim.deep_equal(original, lines) then
+    return false
+  end
+  local ok, err = pcall(vim.api.nvim_buf_set_lines, 0, start_idx, end_idx, false, lines)
+  if not ok then
+    vim.notify('Failed to update buffer: ' .. tostring(err), vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
+--- Return true if diagnostics mark the row as unused (0-based row)
+function M.is_unused(row)
+  if not row then
+    return false
+  end
+  local diags = vim_diagnostic.get(0, { lnum = row })
+  for _, d in ipairs(diags) do
+    local msg = d.message or ''
+    if msg:match('is not used') or msg:match('is declared but not used') then
+      return true
+    end
+  end
+  return false
+end
+
+return M
+
+-- End of lua/php-elements-sorter/utils.lua
+
+-- File: lua/php-elements-sorter/ui.lua
+-- lua/php-elements-sorter/ui.lua
+-- UI helpers: Telescope + vim.ui.select with nice formatting
+
+local M = {}
+
+local has_telescope, _ = pcall(require, 'telescope')
+
+--- Show code actions with Telescope using entry_display & widths
+function M.show_code_actions_with_telescope(actions_list, on_select)
+  if not has_telescope then
+    return false
+  end
+
+  local pickers = require('telescope.pickers')
+  local finders = require('telescope.finders')
+  local conf = require('telescope.config').values
+  local actions = require('telescope.actions')
+  local action_state = require('telescope.actions.state')
+  local entry_display = require('telescope.pickers.entry_display')
+  local strings = require('plenary.strings')
+
+  local function make_indexed_with_widths(items)
+    local indexed_items = {}
+    local widths = { idx = 0, title = 0, client = 0 }
+
+    for idx, action in ipairs(items) do
+      local title = tostring(action.title or ''):gsub('\r\n', '\\r\\n'):gsub('\n', '\\n')
+      local client = tostring(
+        action.is_lsp and action.client_name
+        or (action.is_custom and 'php-elements-sorter' or 'Unknown')
+      )
+
+      local entry = {
+        idx = idx,
+        title = title,
+        client = client,
+        action = action,
+      }
+      table.insert(indexed_items, entry)
+
+      widths.idx = math.max(widths.idx, strings.strdisplaywidth(tostring(entry.idx)))
+      widths.title = math.max(widths.title, strings.strdisplaywidth(entry.title))
+      widths.client = math.max(widths.client, strings.strdisplaywidth(entry.client))
+    end
+
+    return indexed_items, widths
+  end
+
+  local indexed_actions, widths = make_indexed_with_widths(actions_list)
+
+  local displayer = entry_display.create({
+    separator = ' ',
+    items = {
+      { width = widths.idx + 1 },
+      { width = widths.title },
+      { width = widths.client },
+    },
+  })
+
+  local make_display = function(entry)
+    return displayer({
+      { entry.value.idx .. ':', 'TelescopePromptPrefix' },
+      { entry.value.title },
+      { entry.value.client,     'TelescopeResultsComment' },
+    })
+  end
+
+  pickers
+      .new({}, {
+        prompt_title = 'Code Actions (' .. #indexed_actions .. ' available)',
+        finder = finders.new_table({
+          results = indexed_actions,
+          entry_maker = function(entry)
+            return {
+              value = entry,
+              display = make_display,
+              ordinal = entry.idx .. ' ' .. entry.title .. ' ' .. entry.client,
+            }
+          end,
+        }),
+        sorter = conf.generic_sorter({}),
+        attach_mappings = function(prompt_bufnr)
+          actions.select_default:replace(function()
+            actions.close(prompt_bufnr)
+            local selection = action_state.get_selected_entry()
+            if selection and selection.value then
+              on_select(selection.value.action)
+            end
+          end)
+          return true
+        end,
+        layout_config = {
+          prompt_position = 'top',
+          width = 0.7,
+          height = 0.7,
+        },
+        sorting_strategy = 'ascending',
+      })
+      :find()
+
+  return true
+end
+
+--- Fallback UI: vim.ui.select
+function M.show_code_actions_with_ui_select(actions_list, on_select)
+  for i, a in ipairs(actions_list) do
+    a._index = i
+  end
+
+  vim.ui.select(actions_list, {
+    prompt = 'Code Actions (' .. #actions_list .. ' available):',
+    format_item = function(item)
+      local idx = item._index or 0
+      local number_str = tostring(idx) .. ':'
+      local title_str = tostring(item.title or '')
+      local client_str = tostring(
+        item.is_lsp and item.client_name or (item.is_custom and 'php-elements-sorter' or 'Unknown')
+      )
+      local total_width = 80
+      local content_width = #number_str + #title_str
+      local padding = math.max(0, total_width - content_width - #client_str)
+      return string.format(
+        '%s %s%s %s',
+        number_str,
+        title_str,
+        string.rep(' ', padding),
+        client_str
+      )
+    end,
+  }, function(choice)
+    if choice then
+      on_select(choice)
+    end
+  end)
+end
+
+return M
+
+-- End of lua/php-elements-sorter/ui.lua
+
+-- File: lua/tests/php-elements-sorter_spec.lua
+local sorter = require('php-elements-sorter')
+
+describe('PHP Elements Sorter', function()
+  before_each(function()
+    -- Create a new buffer for each test
+    vim.cmd('enew')
+    vim.bo.filetype = 'php'
+  end)
+
+  after_each(function()
+    -- Clean up buffer
+    vim.cmd('bwipeout!')
+  end)
+
+  describe('setup', function()
+    it('should initialize without errors', function()
+      assert.has_no.errors(function()
+        sorter.setup()
+      end)
+    end)
+
+    it('should accept custom config', function()
+      assert.has_no.errors(function()
+        sorter.setup({
+          sort_properties = false,
+          default_visibility = 'private',
+          debug = false,
+        })
+      end)
+    end)
+
+    it('should merge user config with defaults', function()
+      sorter.setup({
+        sort_properties = false,
+        debug = true,
+      })
+
+      -- Config should be updated
+      assert.is_false(sorter.config.sort_properties)
+      assert.is_true(sorter.config.debug)
+      -- Default values should still exist
+      assert.is_not_nil(sorter.config.sort_traits)
+    end)
+  end)
+
+  describe('buffer state management', function()
+    it('should create state for current buffer', function()
+      sorter.setup()
+
+      local config = sorter.get_buffer_config()
+      assert.is_table(config)
+      assert.is_not_nil(config.sort_properties)
+    end)
+
+    it('should allow buffer-specific config overrides', function()
+      sorter.setup()
+
+      local bufnr = vim.api.nvim_get_current_buf()
+      sorter.set_buffer_config(bufnr, {
+        sort_properties = false,
+      })
+
+      local config = sorter.get_buffer_config(bufnr)
+      assert.is_false(config.sort_properties)
+    end)
+
+    it('should provide state info', function()
+      sorter.setup()
+
+      local info = sorter.get_state_info()
+      assert.is_table(info)
+      assert.is_number(info.active_buffers)
+      assert.is_table(info.states)
+    end)
+
+    it('should cleanup invalid states', function()
+      sorter.setup()
+
+      local cleaned = sorter.cleanup_invalid_states()
+      assert.is_number(cleaned)
+    end)
+  end)
+
+  describe('command registration', function()
+    it('should register SortPhpElements command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['SortPhpElements'])
+    end)
+
+    it('should register SortPhpNamespaceUses command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['SortPhpNamespaceUses'])
+    end)
+
+    it('should register RemoveUnusedUses command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['RemoveUnusedUses'])
+    end)
+
+    it('should register SortPhpClassElements command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['SortPhpClassElements'])
+    end)
+
+    it('should register PhpSorterInfo command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['PhpSorterInfo'])
+    end)
+
+    it('should register PhpSorterCleanup command', function()
+      sorter.setup()
+
+      local commands = vim.api.nvim_get_commands({})
+      assert.is_not_nil(commands['PhpSorterCleanup'])
+    end)
+  end)
+
+  describe('code actions', function()
+    it('should provide code actions for PHP files', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'use Zebra\\Animal;',
+        'use Apple\\Fruit;',
+        '',
+        'class Test {',
+        '}',
+      }
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      local actions = sorter.get_code_actions()
+
+      assert.is_table(actions)
+      assert.is_true(#actions > 0)
+    end)
+  end)
+
+  describe('namespace uses sorting', function()
+    it('should execute sort_namespace_uses without errors', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'use Zebra\\Animal;',
+        'use Apple\\Fruit;',
+        'use Banana\\Fruit;',
+        '',
+        'class Test {',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      -- Should not error
+      assert.has_no.errors(function()
+        sorter.sort_namespace_uses()
+      end)
+    end)
+
+    it('should execute via SortPhpNamespaceUses command', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'use Zebra\\Animal;',
+        'use Apple\\Fruit;',
+        '',
+        'class Test {',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        vim.cmd('SortPhpNamespaceUses')
+      end)
+    end)
+
+    it('should handle files with no use statements', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'class Test {',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        sorter.sort_namespace_uses()
+      end)
+    end)
+  end)
+
+  describe('remove unused uses', function()
+    it('should execute without errors', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'use Used\\Class;',
+        'use Unused\\Class;',
+        '',
+        'class Test {',
+        '    public function test() {',
+        '        return new Used\\Class();',
+        '    }',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        sorter.remove_unused_uses()
+      end)
+    end)
+
+    it('should execute via RemoveUnusedUses command', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'use Some\\Class;',
+        '',
+        'class Test {',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        vim.cmd('RemoveUnusedUses')
+      end)
+    end)
+  end)
+
+  describe('sort elements', function()
+    it('should execute without errors', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'class Test {',
+        '    private $zebra;',
+        '    public $apple;',
+        '    protected $banana;',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        sorter.sort_elements()
+      end)
+    end)
+
+    it('should execute via SortPhpClassElements command', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'class Test {',
+        '    const Z = 1;',
+        '    const A = 2;',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        vim.cmd('SortPhpClassElements')
+      end)
+    end)
+  end)
+
+  describe('sort all', function()
+    it('should execute without errors', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'namespace App\\Models;',
+        '',
+        'use Zebra\\Animal;',
+        'use Apple\\Fruit;',
+        '',
+        'class User {',
+        '    const STATUS_ACTIVE = 1;',
+        '    ',
+        '    private $zebra;',
+        '    public $name;',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        sorter.sort_all()
+      end)
+    end)
+
+    it('should execute via SortPhpElements command', function()
+      sorter.setup()
+
+      local lines = {
+        '<?php',
+        '',
+        'class Test {',
+        '}',
+      }
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+
+      assert.has_no.errors(function()
+        vim.cmd('SortPhpElements')
+      end)
+    end)
+  end)
+
+  describe('edge cases', function()
+    it('should handle empty buffers', function()
+      sorter.setup()
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, {})
+
+      assert.has_no.errors(function()
+        sorter.sort_all()
+      end)
+    end)
+
+    it('should handle buffers with only PHP tag', function()
+      sorter.setup()
+
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { '<?php' })
+
+      assert.has_no.errors(function()
+        sorter.sort_all()
+      end)
+    end)
+
+    it('should handle non-PHP buffers gracefully', function()
+      sorter.setup()
+
+      vim.bo.filetype = 'lua'
+
+      assert.has_no.errors(function()
+        vim.cmd('SortPhpElements')
+      end)
+    end)
+  end)
+
+  describe('diagnostic commands', function()
+    it('should execute PhpSorterInfo without errors', function()
+      sorter.setup()
+
+      assert.has_no.errors(function()
+        vim.cmd('PhpSorterInfo')
+      end)
+    end)
+
+    it('should execute PhpSorterCleanup without errors', function()
+      sorter.setup()
+
+      assert.has_no.errors(function()
+        vim.cmd('PhpSorterCleanup')
+      end)
+    end)
+  end)
+end)
+
+-- End of lua/tests/php-elements-sorter_spec.lua
+
+.PHONY: test debug-test simple-test
+
+# Version with proper exit code handling
+test:
+	@echo "Running tests..."
+	@nvim --headless -u tests/minimal_init.lua \
+		-c "PlenaryBustedDirectory lua/tests/ {minimal_init = 'tests/minimal_init.lua'}" \
+		-c "qa!"
+
+# For debug - shows more information
+debug-test:
+	@echo "Debug mode..."
+	@nvim --headless -u tests/minimal_init.lua \
+		-c "lua print('Plenary loaded:', pcall(require, 'plenary'))" \
+		-c "lua print('Test dir exists:', vim.fn.isdirectory('lua/tests'))" \
+		-c "PlenaryBustedDirectory lua/tests/ {minimal_init = 'tests/minimal_init.lua'}" \
+		-c "qa!"
+
+# Version more simple without treesitter
+simple-test:
+	@nvim --headless --noplugin -u NONE \
+		-c "set rtp+=." \
+		-c "set rtp+=~/.local/share/nvim/site/pack/vendor/start/plenary.nvim" \
+		-c "runtime plugin/plenary.vim" \
+		-c "PlenaryBustedDirectory lua/tests/" \
+		-c "qa!"
+# PHP Elements Sorter
+
+**PHP Elements Sorter** is a Neovim plugin written in Lua that organizes and improves the readability of your PHP classes by sorting and formatting different elements consistently.  
+It uses [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) to parse PHP code and provides **code actions** for an LSP-like workflow.
+
+## ✨ Features
+
+- Sort `namespace use` statements
+- Remove unused `namespace use` statements
+- Sort traits, constants, and properties
+- Add spacing:
+  - Between different visibility modifiers (`public`, `protected`, `private`)
+  - Between constants and properties
+  - Between namespace uses and the class definition
+  - Between traits/properties and methods
+- Configurable defaults
+- Integrated **Code Actions**:
+  - Sort namespace uses
+  - Remove unused namespace uses
+  - Sort traits/constants/properties
+  - Sort all PHP elements
+- Works standalone or alongside your LSP (e.g., Intelephense, PHP Actor)
+- Telescope integration for a polished UI (falls back to `vim.ui.select` if Telescope is not available)
+
+---
+
+## 📦 Installation
+
+With [packer.nvim](https://github.com/wbthomason/packer.nvim):
+
+```lua
+use 'ricardoramirezr/php-elements-sorter.nvim'
+```
+
+---
+
+## ⚙️ Setup
+
+In your Neovim config:
+
+```lua
+require('php-elements-sorter').setup({
+  -- Sorting options
+  sort_properties = true,
+  sort_traits = true,
+  sort_namespace_uses = true,
+  sort_constants = true,
+
+  -- Imports
+  remove_unused_imports = true,
+
+  -- Spacing options
+  add_newline_between_const_and_properties = true,
+  add_visibility_spacing = true,
+  add_newline_after_namespace_uses = true,
+  add_newline_after_trait_uses = true,
+
+  -- Default visibility for properties without modifiers
+  default_visibility = 'public',
+})
+```
+
+---
+
+## 🚀 Usage
+
+### Commands
+
+- `:SortPhpElements` → Sort **all PHP elements** in the current buffer
+
+### Code Actions
+
+When editing a PHP file, trigger code actions `gra`. You’ll see:
+
+1. **Sort namespace uses**  
+2. **Remove unused namespace uses**  
+3. **Sort properties/constants/traits**  
+4. **Sort all PHP elements**
+
+If [Telescope](https://github.com/nvim-telescope/telescope.nvim) is installed, the actions appear in a searchable picker.  
+Otherwise, they are shown via the built-in `vim.ui.select`.
+
+---
+
+## ⚙️ Configuration Options
+
+- `sort_properties`: Sort property declarations (default: `true`)  
+- `sort_traits`: Sort trait uses (default: `true`)  
+- `sort_namespace_uses`: Sort namespace uses (default: `true`)  
+- `sort_constants`: Sort constant declarations (default: `true`)  
+- `remove_unused_imports`: Remove unused imports (default: `true`)  
+- `add_newline_between_const_and_properties`: Add a newline between constant and property declarations (default: `true`)  
+- `add_visibility_spacing`: Add spacing between elements with different visibility modifiers (default: `true`)  
+- `add_newline_after_namespace_uses`: Add a newline after the last namespace use block (default: `true`)  
+- `add_newline_after_trait_uses`: Add a newline after the last trait use (default: `true`)  
+- `default_visibility`: The default visibility modifier for properties without explicit visibility (default: `'public'`)  
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! If you encounter issues or have ideas for improvements, please open an issue or submit a PR.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
+

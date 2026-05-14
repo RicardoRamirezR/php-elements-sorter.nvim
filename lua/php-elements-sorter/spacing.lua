@@ -1,7 +1,5 @@
 -- ============================================================================
 -- lua/php-elements-sorter/spacing.lua
--- Spacing utilities - Refactorizado para usar utils/spacing
--- MEJORA #4: Eliminar duplicación usando spacing utilities centralizadas
 -- ============================================================================
 
 local M = {}

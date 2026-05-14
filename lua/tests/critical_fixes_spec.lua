@@ -1,10 +1,8 @@
 -- lua/tests/critical_fixes_spec.lua
--- Tests específicos para validar las correcciones críticas
--- FIXED: Swap file issues en tests de race conditions
 
 local sorter = require('php-elements-sorter')
 
-describe('Critical Fixes - Race Conditions and Memory Leaks', function()
+describe('Race Conditions and Memory Leaks', function()
   before_each(function()
     -- Disable swap files for tests
     vim.o.swapfile = false
@@ -23,7 +21,7 @@ describe('Critical Fixes - Race Conditions and Memory Leaks', function()
     vim.o.swapfile = true
   end)
 
-  describe('Timer race condition fixes', function()
+  describe('Timer race condition', function()
     it('should handle rapid buffer state access without errors', function()
       local bufnr = vim.api.nvim_get_current_buf()
 
@@ -298,7 +296,7 @@ describe('Critical Fixes - Race Conditions and Memory Leaks', function()
     end)
   end)
 
-  describe('Range normalization fixes', function()
+  describe('Range normalization', function()
     it('should handle end_row = -1 correctly', function()
       local lines = {
         '<?php',

@@ -4,6 +4,7 @@
 local M = {}
 
 local log = require('php-elements-sorter.utils.log')
+local timer = require('php-elements-sorter.utils.timer')
 
 -- Valid visibility values
 local VALID_VISIBILITIES = { 'public', 'protected', 'private' }
@@ -26,8 +27,9 @@ M.config = {
 -- Per-buffer state storage with weak keys for garbage collection
 local buffer_states = setmetatable({}, { __mode = 'k' })
 
--- Global cleanup timer reference
-local cleanup_timer = nil
+-- Global cleanup timer ID
+local cleanup_timer_id = nil
+local setup_count = 0
 
 -- Lazy-load modules
 local sorters = nil
@@ -154,7 +156,7 @@ local function get_state(bufnr)
     prev_type = nil,
     config = vim.deepcopy(M.config), -- Each buffer gets its own config copy
     created_at = os.time(),
-    _invalidate_timer = nil,         -- Timer for debounced invalidation
+    _invalidate_timer_id = nil,      -- Timer ID for debounced invalidation
   }
 
   buffer_states[bufnr] = state
@@ -167,8 +169,8 @@ local function get_state(bufnr)
     once = true,
     callback = function()
       -- Stop any pending timer before cleanup
-      if buffer_states[bufnr] and buffer_states[bufnr]._invalidate_timer then
-        buffer_states[bufnr]._invalidate_timer:stop()
+      if buffer_states[bufnr] and buffer_states[bufnr]._invalidate_timer_id then
+        timer.stop(buffer_states[bufnr]._invalidate_timer_id)
       end
       buffer_states[bufnr] = nil
       log.debug(string.format('Cleaned up state for buffer %d', bufnr))
@@ -198,6 +200,7 @@ function M.get_state_info()
   local info = {
     active_buffers = 0,
     states = {},
+    timer_stats = timer.get_stats(),
   }
 
   for bufnr, state in pairs(buffer_states) do
@@ -209,7 +212,7 @@ function M.get_state_info()
       has_parser = state.root ~= nil,
       lang = state.lang,
       age_seconds = os.time() - (state.created_at or 0),
-      has_pending_timer = state._invalidate_timer ~= nil,
+      has_pending_timer = state._invalidate_timer_id ~= nil,
     })
   end
 
@@ -223,8 +226,8 @@ function M.cleanup_invalid_states()
   for bufnr, state in pairs(buffer_states) do
     if not vim.api.nvim_buf_is_valid(bufnr) then
       -- Stop any pending timer before cleanup
-      if state._invalidate_timer then
-        state._invalidate_timer:stop()
+      if state._invalidate_timer_id then
+        timer.stop(state._invalidate_timer_id)
       end
       buffer_states[bufnr] = nil
       cleaned = cleaned + 1
@@ -317,6 +320,36 @@ end
 ---@return boolean valid, string? error
 function M.validate_config()
   return validate_config(M.config)
+end
+
+--- Get timer statistics
+---@return table stats
+function M.get_timer_stats()
+  return timer.get_stats()
+end
+
+--- Preview all sorting operations
+function M.preview_all()
+  local preview = require('php-elements-sorter.preview')
+  return preview.preview_all()
+end
+
+--- Preview namespace uses sorting
+function M.preview_namespace_uses()
+  local preview = require('php-elements-sorter.preview')
+  return preview.preview_namespace_uses()
+end
+
+--- Preview elements sorting
+function M.preview_elements()
+  local preview = require('php-elements-sorter.preview')
+  return preview.preview_elements()
+end
+
+--- Check if preview mode is available
+function M.preview_available()
+  local preview = require('php-elements-sorter.preview')
+  return preview.is_available()
 end
 
 --- Setup code_action override for PHP files only
@@ -425,6 +458,49 @@ local function create_user_commands()
       end,
       desc = 'Validate current configuration',
     },
+    {
+      name = 'PhpSorterTimerStats',
+      func = function()
+        timer.print_stats()
+      end,
+      desc = 'Show timer statistics',
+    },
+    {
+      name = 'SortPhpElementsPreview',
+      func = function()
+        local preview = require('php-elements-sorter.preview')
+        if not preview.is_available() then
+          vim.notify('[php-elements-sorter] Preview mode requires Neovim 0.6+', vim.log.levels.WARN)
+          return
+        end
+        preview.preview_all()
+      end,
+      desc = 'Preview all PHP element sorting changes',
+    },
+    {
+      name = 'SortPhpNamespaceUsesPreview',
+      func = function()
+        local preview = require('php-elements-sorter.preview')
+        if not preview.is_available() then
+          vim.notify('[php-elements-sorter] Preview mode requires Neovim 0.6+', vim.log.levels.WARN)
+          return
+        end
+        preview.preview_namespace_uses()
+      end,
+      desc = 'Preview namespace use statement sorting',
+    },
+    {
+      name = 'SortPhpClassElementsPreview',
+      func = function()
+        local preview = require('php-elements-sorter.preview')
+        if not preview.is_available() then
+          vim.notify('[php-elements-sorter] Preview mode requires Neovim 0.6+', vim.log.levels.WARN)
+          return
+        end
+        preview.preview_elements()
+      end,
+      desc = 'Preview class element sorting',
+    },
   }
 
   for _, cmd in ipairs(commands) do
@@ -453,7 +529,7 @@ local function setup_autocommands()
     })
   end
 
-  -- Invalidate parser state on buffer changes (FIXED: race condition)
+  -- Invalidate parser state on buffer changes (using Timer Manager)
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
     group = group,
     pattern = '*.php',
@@ -466,29 +542,61 @@ local function setup_autocommands()
         return
       end
 
-      -- Cancel previous timer if it exists
-      if state._invalidate_timer then
-        state._invalidate_timer:stop()
-        state._invalidate_timer = nil
-      end
-
-      -- Create new debounced timer
-      state._invalidate_timer = vim.defer_fn(function()
+      -- Use Timer Manager for debounced invalidation
+      local timer_key = 'invalidate_parser_' .. bufnr
+      local timer_id = timer.debounce(timer_key, 500, function()
         -- Double-check state still exists before invalidating
         if buffer_states[bufnr] then
           invalidate_parser_state(bufnr)
-          buffer_states[bufnr]._invalidate_timer = nil
+          buffer_states[bufnr]._invalidate_timer_id = nil
         end
-      end, 500)
+      end)
+
+      -- Store timer ID in state
+      if timer_id then
+        state._invalidate_timer_id = timer_id
+      end
     end,
     desc = 'Invalidate parser state on buffer changes',
   })
 
-  -- Periodic cleanup of invalid states (every 5 minutes)
-  -- Store timer reference for proper cleanup
-  cleanup_timer = vim.fn.timer_start(300000, function()
-    M.cleanup_invalid_states()
-  end, { ['repeat'] = -1 })
+  -- Periodic cleanup ONLY if we have PHP buffers
+  -- Check every 5 minutes, but only cleanup if there are active PHP buffers
+  vim.api.nvim_create_autocmd('BufEnter', {
+    group = group,
+    pattern = '*.php',
+    callback = function()
+      -- Start cleanup timer only once and only when a PHP buffer is active
+      if not cleanup_timer_id then
+        log.debug('Starting periodic cleanup timer (first PHP buffer)')
+
+        cleanup_timer_id = timer.repeat_timer(300000, function()
+          -- Only run if we have active PHP buffers
+          local php_buffer_count = 0
+          for bufnr in pairs(buffer_states) do
+            if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == 'php' then
+              php_buffer_count = php_buffer_count + 1
+            end
+          end
+
+          if php_buffer_count > 0 then
+            log.debug('Running periodic cleanup (active PHP buffers: ' .. php_buffer_count .. ')')
+            M.cleanup_invalid_states()
+            -- Clean timers older than 10 minutes (not 5, to avoid cleaning ourselves)
+            timer.cleanup_old_timers(600)
+          else
+            log.debug('No active PHP buffers, stopping periodic cleanup')
+            -- Stop the cleanup timer if no PHP buffers
+            if cleanup_timer_id then
+              timer.stop(cleanup_timer_id)
+              cleanup_timer_id = nil
+            end
+          end
+        end, -1, 'periodic_cleanup')
+      end
+    end,
+    desc = 'Start periodic cleanup when PHP buffer is opened',
+  })
 
   log.debug('Autocommands configured')
 end
@@ -497,21 +605,16 @@ end
 function M.teardown()
   log.debug('Tearing down php-elements-sorter')
 
-  -- Stop global cleanup timer
-  if cleanup_timer then
-    vim.fn.timer_stop(cleanup_timer)
-    cleanup_timer = nil
-    log.debug('Stopped global cleanup timer')
+  -- Stop periodic cleanup timer explicitly
+  if cleanup_timer_id then
+    timer.stop(cleanup_timer_id)
+    cleanup_timer_id = nil
+    log.debug('Stopped periodic cleanup timer')
   end
 
-  -- Stop all buffer-specific timers
-  for bufnr, state in pairs(buffer_states) do
-    if state._invalidate_timer then
-      state._invalidate_timer:stop()
-      state._invalidate_timer = nil
-      log.debug(string.format('Stopped timer for buffer %d', bufnr))
-    end
-  end
+  -- Stop all other timers
+  local stopped = timer.stop_all()
+  log.debug(string.format('Stopped %d timers', stopped))
 
   -- Clear all buffer states
   for bufnr in pairs(buffer_states) do
@@ -524,12 +627,22 @@ end
 --- Setup plugin, register commands and LSP command shims
 ---@param user_config table?
 function M.setup(user_config)
+  setup_count = setup_count + 1
+
+  -- Prevent multiple setups from creating duplicate timers
+  if setup_count > 1 then
+    log.debug('Setup called multiple times (' .. setup_count .. '), updating config only')
+    M.config = sanitize_config(user_config)
+    log.init(M.config)
+    return M
+  end
+
   -- Sanitize and validate user config
   M.config = sanitize_config(user_config)
 
   log.init(M.config)
 
-  log.debug('Setting up php-elements-sorter plugin')
+  log.debug('Setting up php-elements-sorter plugin (first time)')
 
   -- Log configuration if debug is enabled
   if M.config.debug then

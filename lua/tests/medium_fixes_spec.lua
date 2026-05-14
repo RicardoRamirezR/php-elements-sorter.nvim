@@ -1,5 +1,4 @@
 -- lua/tests/medium_fixes_spec.lua
--- Tests para correcciones de severidad media/alta
 
 local sorter = require('php-elements-sorter')
 local parser = require('php-elements-sorter.parser')
